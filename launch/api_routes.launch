@@ -1,0 +1,43 @@
+<launch>
+    <!-- MAVROS configuration arguments -->
+    <arg name="fcu_url" default="$(optenv FCU_URL tcp://127.0.0.1:5760)"/>
+    <arg name="gcs_url" default=""/>
+    <arg name="tgt_system" default="1"/>
+    <arg name="tgt_component" default="1"/>
+    <arg name="log_output" default="screen"/>
+    <arg name="fcu_protocol" default="v2.0"/>
+    <arg name="respawn_mavros" default="true"/>
+    
+    <!-- Include the standard MAVROS launch file -->
+    <include file="$(find mavros)/launch/apm.launch">
+        <arg name="fcu_url" value="$(arg fcu_url)"/>
+        <arg name="gcs_url" value="$(arg gcs_url)"/>
+        <arg name="tgt_system" value="$(arg tgt_system)"/>
+        <arg name="tgt_component" value="$(arg tgt_component)"/>
+        <arg name="log_output" value="$(arg log_output)"/>
+        <arg name="fcu_protocol" value="$(arg fcu_protocol)"/>
+        <arg name="respawn_mavros" value="$(arg respawn_mavros)"/>
+    </include>
+
+    <!-- api_routes configuration arguments -->
+    <arg name="publish_rate" default="20.0"/>
+    <arg name="use_degrees" default="false"/>
+    <arg name="odom_topic" default="/mavros/local_position/odom"/>
+    <arg name="mqtt_host" default="localhost"/>
+    <arg name="mqtt_port" default="1883"/>
+    <arg name="web_port" default="8000"/>
+    <arg name="cloud_host" default="localhost"/>
+    <arg name="cloud_port" default="8001"/>
+
+    <!-- Launch the integrated api_routes node -->
+    <node pkg="api_routes" type="api_routes_node" name="api_routes">
+        <param name="publish_rate" value="$(arg publish_rate)"/>
+        <param name="use_degrees" value="$(arg use_degrees)"/>
+        <param name="odom_topic" value="$(arg odom_topic)"/>
+        <param name="mqtt_host" value="$(arg mqtt_host)"/>
+        <param name="mqtt_port" value="$(arg mqtt_port)"/>
+        <param name="web_port" value="$(arg web_port)"/>
+        <param name="cloud_host" value="$(arg cloud_host)"/>
+        <param name="cloud_port" value="$(arg cloud_port)"/>
+    </node>
+</launch>
