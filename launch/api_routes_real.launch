@@ -1,0 +1,9 @@
+<launch>
+    <include file="$(find api_routes)/launch/api_routes.launch">
+        <arg name="web_port" value="8000" />
+        <arg name="mqtt_port" value="41883" />
+        <arg name="mqtt_host" value="100.64.0.12" />
+        <arg name="cloud_host" value="100.64.0.12" />
+        <arg name="cloud_port" default="40001"/>
+    </include>
+</launch>

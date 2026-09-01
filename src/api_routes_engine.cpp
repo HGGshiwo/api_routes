@@ -148,7 +148,7 @@ void ApiRoutesEngine::publish_in_memory_state() {
     diff_json["deviceCode"] = device_code_.value_or("");
     diff_json["timestamp"] = (uint64_t)(get_time_provider()->now() * 1000);
 
-    mqtt_adapter_->publish(resolve_topic("/device/$/state"), diff_json.dump(),
+    mqtt_adapter_->publish(resolve_topic("device/$/state"), diff_json.dump(),
                            0, false);
 
     web_adapter_->publish_state_to_path("/ws", "/ws", diff_json);
