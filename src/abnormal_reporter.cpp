@@ -34,14 +34,21 @@ void AbnormalReporter::start() {
 }
 
 void AbnormalReporter::onReportCallback(const std_msgs::String::ConstPtr &msg) {
+    ROS_INFO_STREAM("[AbnormalReporter] Received ROS message on "
+                    << config_.ros_topic << " (payload length: "
+                    << (msg ? msg->data.size() : 0) << " bytes)");
     std::thread(&AbnormalReporter::processAndUploadAsync, this, msg->data)
         .detach();
 }
 
 bool AbnormalReporter::downloadUrlToBuffer(const std::string &url,
                                            std::vector<uint8_t> &buffer) {
+    ROS_INFO_STREAM("[AbnormalReporter] Downloading remote file: " << url);
     CURL *curl = curl_easy_init();
-    if (!curl) return false;
+    if (!curl) {
+        ROS_ERROR_STREAM("[AbnormalReporter] Failed to init curl handle for download: " << url);
+        return false;
+    }
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
@@ -54,7 +61,15 @@ bool AbnormalReporter::downloadUrlToBuffer(const std::string &url,
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_easy_cleanup(curl);
 
-    return (res == CURLE_OK && http_code >= 200 && http_code < 300);
+    if (res != CURLE_OK || http_code < 200 || http_code >= 300) {
+        ROS_WARN_STREAM("[AbnormalReporter] Download failed for "
+                        << url << " (curl error: " << curl_easy_strerror(res)
+                        << ", HTTP status: " << http_code << ")");
+        return false;
+    }
+    ROS_INFO_STREAM("[AbnormalReporter] Successfully downloaded " << url
+                    << " (" << buffer.size() << " bytes)");
+    return true;
 }
 
 bool AbnormalReporter::readAndDeleteLocalFile(const std::string &file_path,
@@ -90,16 +105,18 @@ bool AbnormalReporter::readAndDeleteLocalFile(const std::string &file_path,
 }
 
 void AbnormalReporter::processAndUploadAsync(std::string json_str) {
+    ROS_INFO_STREAM("[AbnormalReporter] Starting async process and upload...");
     nlohmann::json root;
     try {
         root = nlohmann::json::parse(json_str);
     } catch (const std::exception &e) {
-        ROS_ERROR_STREAM("[AbnormalReporter] Failed to parse JSON: " << e.what());
+        ROS_ERROR_STREAM("[AbnormalReporter] Failed to parse JSON: " << e.what()
+                         << " | Payload: " << json_str);
         return;
     }
 
     if (!root.is_object()) {
-        ROS_ERROR_STREAM("[AbnormalReporter] Received JSON is not an object.");
+        ROS_ERROR_STREAM("[AbnormalReporter] Received JSON is not an object. Payload: " << json_str);
         return;
     }
 
@@ -117,13 +134,18 @@ void AbnormalReporter::processAndUploadAsync(std::string json_str) {
                      std::to_string(config_.cloud_port) + "/" + path;
     }
 
+    ROS_INFO_STREAM("[AbnormalReporter] Target HTTP URL: " << target_url);
+
     // Injected fields from telemetry and engine
+    ROS_INFO_STREAM("[AbnormalReporter] Fetching telemetry state & device code...");
     nlohmann::json state = telemetry_->getMergedState();
     std::string device_code = get_device_code_fn_();
-    std::string map_coord =
-        state.contains("mapLocation") ? state["mapLocation"].dump() : "[]";
-    std::string gps_loc =
-        state.contains("gpsLocation") ? state["gpsLocation"].dump() : "[]";
+    ROS_INFO_STREAM("[AbnormalReporter] Injected deviceCode: " << device_code);
+
+    // Directly inject extra fields into root JSON object (nlohmann::json auto-deduplicates keys)
+    root["deviceCode"] = device_code;
+    root["mapCoordinate"] = state.contains("mapLocation") ? state["mapLocation"] : nlohmann::json::array();
+    root["gpsLocation"] = state.contains("gpsLocation") ? state["gpsLocation"] : nlohmann::json::array();
 
     CURL *curl = curl_easy_init();
     if (!curl) {
@@ -133,16 +155,12 @@ void AbnormalReporter::processAndUploadAsync(std::string json_str) {
 
     curl_mime *mime = curl_mime_init(curl);
 
-    // 1. Inject extra text fields
+    // Helper to add form-data text field
     auto add_text_field = [&](const std::string &name, const std::string &val) {
         curl_mimepart *part = curl_mime_addpart(mime);
         curl_mime_name(part, name.c_str());
         curl_mime_data(part, val.c_str(), CURL_ZERO_TERMINATED);
     };
-
-    add_text_field("deviceCode", device_code);
-    add_text_field("mapCoordinate", map_coord);
-    add_text_field("gpsLocation", gps_loc);
 
     // Struct to hold file buffer memory during curl_easy_perform
     struct FileBufferHolder {
@@ -151,7 +169,7 @@ void AbnormalReporter::processAndUploadAsync(std::string json_str) {
     };
     std::vector<std::shared_ptr<FileBufferHolder>> file_holders;
 
-    // 2. Iterate JSON keys
+    // Iterate JSON keys (all keys are now unique and properly typed)
     for (auto &el : root.items()) {
         const std::string &key = el.key();
         const auto &val = el.value();
@@ -168,6 +186,7 @@ void AbnormalReporter::processAndUploadAsync(std::string json_str) {
 
             for (const auto &fpath : file_paths) {
                 if (fpath.empty()) continue;
+                ROS_INFO_STREAM("[AbnormalReporter] Processing file attachment: " << fpath);
                 auto holder = std::make_shared<FileBufferHolder>();
 
                 bool success = false;
@@ -189,21 +208,37 @@ void AbnormalReporter::processAndUploadAsync(std::string json_str) {
                         file_part,
                         reinterpret_cast<const char *>(holder->bytes.data()),
                         holder->bytes.size());
+                    ROS_INFO_STREAM("[AbnormalReporter] Attached file: "
+                                    << holder->filename << " ("
+                                    << holder->bytes.size() << " bytes)");
                 } else {
                     ROS_WARN_STREAM("[AbnormalReporter] Failed to fetch file content for: " << fpath);
                 }
             }
+        } else if (val.is_array()) {
+            // For JSON array fields: expand array items into multiple form parts with the same key
+            for (const auto &item : val) {
+                std::string item_str = item.is_string() ? item.get<std::string>() : item.dump();
+                add_text_field(key, item_str);
+            }
         } else {
-            // All other fields: convert to string and add as form-data field
+            // For scalar fields: convert to string and add as form part
             std::string text_val = val.is_string() ? val.get<std::string>() : val.dump();
             add_text_field(key, text_val);
         }
     }
 
+    struct curl_slist *headers = nullptr;
+    headers = curl_slist_append(headers, "Expect:");
+
     curl_easy_setopt(curl, CURLOPT_URL, target_url.c_str());
     curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "AbnormalReporter/1.0");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+
+    ROS_INFO_STREAM("[AbnormalReporter] Performing HTTP POST to " << target_url << " ...");
 
     CURLcode res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
@@ -216,6 +251,10 @@ void AbnormalReporter::processAndUploadAsync(std::string json_str) {
                         << target_url << " - HTTP Status: " << status_code);
     }
 
+    if (headers) {
+        curl_slist_free_all(headers);
+    }
     curl_mime_free(mime);
     curl_easy_cleanup(curl);
+    ROS_INFO_STREAM("[AbnormalReporter] Async process and upload completed.");
 }

@@ -189,11 +189,17 @@ nlohmann::json MavlinkTelemetry::getMergedState() {
     computeGpsOut(lon_out, lat_out, alt_out);
 
     nlohmann::json j;
+
+    // 获取到有效值才注入（云端要求）
+    if(std::hypot(lon_out, lat_out) > 0.01) {
+        j["gpsLocation"] = {lon_out, lat_out, alt_out};
+    }
+    
     j["mapLocation"] = {pos_x_, pos_y_, pos_z_};
     j["roll"] = roll_;
     j["pitch"] = pitch_;
     j["yaw"] = yaw_;
-    j["gpsLocation"] = {lon_out, lat_out, alt_out};
+    
     j["gps_fix_type"] = gps_fix_type_;
     j["xVel"] = x_vel_;
     j["yVel"] = y_vel_;
