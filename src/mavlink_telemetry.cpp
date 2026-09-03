@@ -14,11 +14,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-static const std::map<std::string, std::string> key_map{
-    {"gps", "gpsLocation"},     {"x_vel", "xVel"},
-    {"y_vel", "yVel"},          {"x_vel_body", "xVelBody"},
-    {"y_vel_body", "yVelBody"}, {"rel_alt", "relAlt"},
-    {"gps_nsats", "gpsNsats"},  {"pos_enu", "mapLocation"}};
+
 
 MavlinkTelemetry::MavlinkTelemetry(ros::NodeHandle &nh, ros::NodeHandle &pnh) {
     pnh.param<double>("publish_rate", publish_rate_, 20.0);
@@ -210,15 +206,10 @@ nlohmann::json MavlinkTelemetry::getMergedState() {
     j["gpsNsats"] = gps_nsats_;
     j["mode"] = mode_;
 
-    // Merge in extra /dank/status JSON if available
+    // Merge in extra /dank/status JSON unconditionally if available
     if (!dank_status_json_.empty() && dank_status_json_.is_object()) {
         for (auto &el : dank_status_json_.items()) {
-            auto it = key_map.find(el.key());
-            if (it != key_map.end()) {
-                j[it->second] = el.value();
-            } else {
-                j[el.key()] = el.value();
-            }
+            j[el.key()] = el.value();
         }
     }
 

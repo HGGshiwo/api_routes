@@ -112,6 +112,26 @@ void ApiRoutesEngine::setup_http_get_gps() {
     ROS_INFO("[ApiRoutes] HTTP /get_gps endpoint registered.");
 }
 
+static const std::map<std::string, std::string> key_map{
+    {"gpsLocation", "gps"},     {"xVel", "x_vel"},
+    {"yVel", "y_vel"},          {"xVelBody", "x_vel_body"},
+    {"yVelBody", "y_vel_body"}, {"relAlt", "rel_alt"},
+    {"gpsNsats", "gps_nsats"},  {"mapLocation", "pos_enu"}};
+
+static nlohmann::json convert_ws_keys(const nlohmann::json &input) {
+    if (!input.is_object()) return input;
+    nlohmann::json output = nlohmann::json::object();
+    for (auto &el : input.items()) {
+        auto it = key_map.find(el.key());
+        if (it != key_map.end()) {
+            output[it->second] = el.value();
+        } else {
+            output[el.key()] = el.value();
+        }
+    }
+    return output;
+}
+
 void ApiRoutesEngine::setup_ws_state() {
     std::string route_path = "/ws";
     {
@@ -123,7 +143,7 @@ void ApiRoutesEngine::setup_ws_state() {
                     last_state["deviceCode"] = device_code_.value_or("");
                     last_state["timestamp"] =
                         (uint64_t)(get_time_provider()->now() * 1000);
-                    conn->send_state(route_path, last_state);
+                    conn->send_state(route_path, convert_ws_keys(last_state));
                 }
             };
     }
@@ -151,7 +171,7 @@ void ApiRoutesEngine::publish_in_memory_state() {
     mqtt_adapter_->publish(resolve_topic("device/$/state"), diff_json.dump(),
                            0, false);
 
-    web_adapter_->publish_state_to_path("/ws", "/ws", diff_json);
+    web_adapter_->publish_state_to_path("/ws", "/ws", convert_ws_keys(diff_json));
 }
 
 void ApiRoutesEngine::setup_mqtt() {
