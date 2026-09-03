@@ -4,6 +4,7 @@
         <arg name="mqtt_port" value="41883" />
         <arg name="mqtt_host" value="100.64.0.12" />
         <arg name="cloud_host" value="100.64.0.12" />
-        <arg name="cloud_port" default="40001"/>
+        <arg name="cloud_port" value="40001"/>
+        <arg name="fcu_url" value="/dev/ttyS5:115200"/>
     </include>
 </launch>
