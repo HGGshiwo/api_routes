@@ -30,7 +30,7 @@
     <arg name="cloud_port" default="8001"/>
 
     <!-- Launch the integrated api_routes node -->
-    <node pkg="api_routes" type="api_routes_node" name="api_routes">
+    <node pkg="api_routes" type="api_routes_node" name="api_routes" respawn="true" respawn_delay="5">
         <param name="publish_rate" value="$(arg publish_rate)"/>
         <param name="use_degrees" value="$(arg use_degrees)"/>
         <param name="odom_topic" value="$(arg odom_topic)"/>
