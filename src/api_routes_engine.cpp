@@ -143,6 +143,7 @@ void ApiRoutesEngine::setup_ws_state() {
                     last_state["deviceCode"] = device_code_.value_or("");
                     last_state["timestamp"] =
                         (uint64_t)(get_time_provider()->now() * 1000);
+                    last_state["type"] = "state";
                     conn->send_state(route_path, convert_ws_keys(last_state));
                 }
             };
@@ -167,10 +168,10 @@ void ApiRoutesEngine::publish_in_memory_state() {
 
     diff_json["deviceCode"] = device_code_.value_or("");
     diff_json["timestamp"] = (uint64_t)(get_time_provider()->now() * 1000);
+    diff_json["type"] = "state";
 
     mqtt_adapter_->publish(resolve_topic("device/$/state"), diff_json.dump(),
                            0, false);
-
     web_adapter_->publish_state_to_path("/ws", "/ws", convert_ws_keys(diff_json));
 }
 
@@ -217,6 +218,7 @@ void ApiRoutesEngine::publish_mqtt_msg(nlohmann::json &data,
                                        const int &qos, const bool &retain) {
     data["deviceCode"] = device_code_.value();
     data["timestamp"] = (uint64_t)(get_time_provider()->now() * 1000);
+    data["type"] = "state";
     mqtt_adapter_->publish(resolve_topic(mqtt_topic), data.dump(), qos, retain);
 }
 
