@@ -6,5 +6,6 @@
         <arg name="cloud_host" value="100.64.0.12" />
         <arg name="cloud_port" value="40001"/>
         <arg name="fcu_url" value="/dev/ttyS5:115200"/>
+        <arg name="odom_topic" value="/loc_base" />
     </include>
 </launch>
