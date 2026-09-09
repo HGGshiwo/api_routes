@@ -8,6 +8,7 @@
 #include <std_msgs/Float64.h>
 #include <std_msgs/String.h>
 
+#include <atomic>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -25,6 +26,18 @@ class MavlinkTelemetry {
 
     // Get current interpolated/raw GPS position JSON for HTTP /get_gps response
     nlohmann::json getGpsResponseJson();
+
+    struct OdomDiag {
+        std::string topic;
+        int num_publishers{0};
+        uint64_t msg_count{0};
+        double pos_x{0.0};
+        double pos_y{0.0};
+        double pos_z{0.0};
+        double age_sec{-1.0};
+    };
+    std::optional<nlohmann::json> getMapId();
+    OdomDiag getOdomDiag();
 
     double getPublishRate() const { return publish_rate_; }
 
@@ -77,8 +90,13 @@ class MavlinkTelemetry {
 
     // Buffer for extra /dank/status JSON received from ROS topic
     nlohmann::json dank_status_json_;
+    std::optional<nlohmann::json> map_id_;
 
     // Datum synchronizer
     DatumSynchronizer datum_sync_;
     std::optional<SyncedPair> last_reliable_datum_;
+
+    // Diagnostics
+    std::atomic<uint64_t> odom_msg_count_{0};
+    ros::Time last_odom_stamp_{0};
 };

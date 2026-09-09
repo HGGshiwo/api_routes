@@ -146,6 +146,10 @@ void AbnormalReporter::processAndUploadAsync(std::string json_str) {
     root["deviceCode"] = device_code;
     root["mapCoordinate"] = state.contains("mapLocation") ? state["mapLocation"] : nlohmann::json::array();
     root["gpsLocation"] = state.contains("gpsLocation") ? state["gpsLocation"] : nlohmann::json::array();
+    if (state.contains("mapId")) {
+        root["mapId"] = state["mapId"];
+        ROS_INFO_STREAM("[AbnormalReporter] Injected mapId: " << root["mapId"]);
+    }
 
     CURL *curl = curl_easy_init();
     if (!curl) {

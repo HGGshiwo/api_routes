@@ -67,6 +67,9 @@ void MavlinkTelemetry::stateCallback(const mavros_msgs::State::ConstPtr &msg) {
 
 void MavlinkTelemetry::localOdomCallback(
     const nav_msgs::Odometry::ConstPtr &msg) {
+    odom_msg_count_++;
+    last_odom_stamp_ = msg->header.stamp;
+
     std::lock_guard<std::mutex> lock(data_mutex_);
 
     pos_x_ = msg->pose.pose.position.x;
@@ -147,6 +150,9 @@ void MavlinkTelemetry::dankStatusCallback(
     std::lock_guard<std::mutex> lock(data_mutex_);
     try {
         dank_status_json_ = nlohmann::json::parse(msg->data);
+        if (dank_status_json_.contains("mapId")) {
+            map_id_ = dank_status_json_["mapId"];
+        }
     } catch (const std::exception &e) {
         ROS_ERROR_STREAM("[MavlinkTelemetry] Failed to parse /dank/status JSON: "
                          << e.what());
@@ -213,7 +219,16 @@ nlohmann::json MavlinkTelemetry::getMergedState() {
         }
     }
 
+    if (map_id_.has_value()) {
+        j["mapId"] = map_id_.value();
+    }
+
     return j;
+}
+
+std::optional<nlohmann::json> MavlinkTelemetry::getMapId() {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    return map_id_;
 }
 
 nlohmann::json MavlinkTelemetry::getGpsResponseJson() {
@@ -285,4 +300,19 @@ void MavlinkTelemetry::setupMavrosStreams(double rate) {
             "MAVROS service /mavros/set_message_interval not available "
             "(timeout).");
     }
+}
+
+MavlinkTelemetry::OdomDiag MavlinkTelemetry::getOdomDiag() {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    OdomDiag diag;
+    diag.topic = odom_topic_;
+    diag.num_publishers = sub_local_odom_.getNumPublishers();
+    diag.msg_count = odom_msg_count_.load();
+    diag.pos_x = pos_x_;
+    diag.pos_y = pos_y_;
+    diag.pos_z = pos_z_;
+    if (!last_odom_stamp_.isZero()) {
+        diag.age_sec = (ros::Time::now() - last_odom_stamp_).toSec();
+    }
+    return diag;
 }

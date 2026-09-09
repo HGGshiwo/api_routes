@@ -1,5 +1,7 @@
 #include "api_routes/api_routes_engine.hpp"
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 
 class GetGpsHttpHandler : public dk::IProtocolHandler<ApiRoutesEngine::WebAdapter> {
     std::shared_ptr<MavlinkTelemetry> telemetry_;
@@ -94,6 +96,24 @@ void ApiRoutesEngine::on_tick(double dt, AppContext &ctx) {
 
     if (is_hz(1.0)) {
         setup_all_topic();
+
+        if (telemetry_) {
+            auto diag = telemetry_->getOdomDiag();
+            std::ostringstream oss;
+            oss << "[ApiRoutes Diag] odom_topic=" << diag.topic
+                << " | pubs=" << diag.num_publishers
+                << " | rx_cnt=" << diag.msg_count
+                << " | age=";
+            if (diag.age_sec >= 0) {
+                oss << std::fixed << std::setprecision(2) << diag.age_sec << "s";
+            } else {
+                oss << "NONE";
+            }
+            oss << " | pos=[" << std::fixed << std::setprecision(3)
+                << diag.pos_x << ", " << diag.pos_y << ", " << diag.pos_z << "]"
+                << " | dev=" << device_code_.value_or("UNSET");
+            ROS_INFO_STREAM(oss.str());
+        }
     }
 
     if (is_hz(0.5) && device_code_.has_value()) {
@@ -156,7 +176,11 @@ void ApiRoutesEngine::setup_ws_state() {
 }
 
 void ApiRoutesEngine::publish_in_memory_state() {
-    if (!device_code_.has_value()) return;
+    if (!device_code_.has_value()) {
+        ROS_WARN_THROTTLE(5.0,
+            "[ApiRoutes Diag] publish_in_memory_state: device_code_ is UNSET, skipping state upload!");
+        return;
+    }
 
     nlohmann::json current_json = telemetry_->getMergedState();
     if (current_json.empty()) return;
@@ -164,14 +188,25 @@ void ApiRoutesEngine::publish_in_memory_state() {
     nlohmann::json diff_json =
         state_diff_tracker_->update_and_get_diff(current_json);
 
-    if (diff_json.empty()) return;
+    if (diff_json.empty()) {
+        ROS_DEBUG_THROTTLE(2.0,
+            "[ApiRoutes Diag] In-memory state diff is empty (all values delta < 0.01).");
+        return;
+    }
+
+    if (!diff_json.contains("mapLocation")) {
+        ROS_DEBUG_THROTTLE(2.0,
+            "[ApiRoutes Diag] diff_json sent without mapLocation (pos delta < 0.01m).");
+    }
 
     diff_json["deviceCode"] = device_code_.value_or("");
     diff_json["timestamp"] = (uint64_t)(get_time_provider()->now() * 1000);
     diff_json["type"] = "state";
 
-    mqtt_adapter_->publish(resolve_topic("device/$/state"), diff_json.dump(),
-                           0, false);
+    if (mqtt_adapter_) {
+        mqtt_adapter_->publish(resolve_topic("device/$/state"), diff_json.dump(),
+                               0, false);
+    }
     web_adapter_->publish_state_to_path("/ws", "/ws", convert_ws_keys(diff_json));
 }
 
