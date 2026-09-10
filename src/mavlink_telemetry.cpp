@@ -76,6 +76,11 @@ void MavlinkTelemetry::localOdomCallback(
     pos_y_ = msg->pose.pose.position.y;
     pos_z_ = msg->pose.pose.position.z;
 
+    ROS_INFO_THROTTLE(2.0,
+        "[OdomCallback] Received %s: seq=%u, stamp=%.3f, pos=[%.3f, %.3f, %.3f]",
+        odom_topic_.c_str(), msg->header.seq, msg->header.stamp.toSec(),
+        pos_x_, pos_y_, pos_z_);
+
     tf2::Quaternion q(
         msg->pose.pose.orientation.x, msg->pose.pose.orientation.y,
         msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
@@ -149,9 +154,17 @@ void MavlinkTelemetry::dankStatusCallback(
     const std_msgs::String::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(data_mutex_);
     try {
-        dank_status_json_ = nlohmann::json::parse(msg->data);
-        if (dank_status_json_.contains("mapId")) {
-            map_id_ = dank_status_json_["mapId"];
+        nlohmann::json new_json = nlohmann::json::parse(msg->data);
+        if (new_json.is_object()) {
+            if (!dank_status_json_.is_object()) {
+                dank_status_json_ = nlohmann::json::object();
+            }
+            for (auto &el : new_json.items()) {
+                dank_status_json_[el.key()] = el.value();
+            }
+            if (dank_status_json_.contains("mapId")) {
+                map_id_ = dank_status_json_["mapId"];
+            }
         }
     } catch (const std::exception &e) {
         ROS_ERROR_STREAM("[MavlinkTelemetry] Failed to parse /dank/status JSON: "

@@ -30,6 +30,7 @@ public:
   ~ImageUploader() = default;
 
   void start();
+  void stop();
 
 private:
   void on_compressed_image(const sensor_msgs::CompressedImage::ConstPtr &msg);

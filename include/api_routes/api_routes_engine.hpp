@@ -31,6 +31,16 @@ const std::string ROSNODE_NAME = "api_routes";
 
 struct AppContext {};
 
+struct ApiRouteTask {
+    std::string key;
+    XmlRpc::XmlRpcValue config;
+    std::vector<std::string> published_ros_topics;
+    std::vector<std::string> subscribed_ros_topics;
+    std::vector<std::string> ws_open_routes;
+    std::shared_ptr<ImageUploader> image_uploader;
+    std::string callback_key;
+};
+
 class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
    public:
     using AllowedEvents = std::tuple<dk::MqttConnectEvent, dk::WsOpenEvent>;
@@ -48,8 +58,9 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
     std::map<std::string, ros::Subscriber> ros_sub_;
     std::vector<std::shared_ptr<ImageUploader>> image_uploaders_;
 
-    std::vector<std::function<void()>> reconnect_callbacks_;
-    std::vector<std::function<void()>> state_heartbeat_callbacks_;
+    std::map<std::string, std::function<void()>> reconnect_callbacks_;
+    std::map<std::string, std::function<void()>> state_heartbeat_callbacks_;
+    std::mutex callbacks_mutex_;
 
     std::map<std::string, std::function<void(std::shared_ptr<dk::WsConnection>)>>
         ws_open_callbacks_;
@@ -60,7 +71,8 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
     std::optional<std::string> device_code_;
     fs::path target_file_;
 
-    std::set<std::string> task_set_;
+    std::map<std::string, std::shared_ptr<ApiRouteTask>> active_tasks_;
+    std::mutex routes_mutex_;
 
     void on_start() override;
     void on_tick(double dt, AppContext &ctx) override;
@@ -74,12 +86,15 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
     void publish_in_memory_state();
     void setup_all_topic();
 
-    void register_mqtt_sub(std::string ros_topic, std::string mqtt_topic, int qos);
-    void register_mqtt_pub(std::string ros_topic, std::string mqtt_topic, int qos,
+    void create_task(const std::string &key, XmlRpc::XmlRpcValue &val);
+    void destroy_task(const std::string &key);
+
+    void register_mqtt_sub(std::shared_ptr<ApiRouteTask> task, std::string ros_topic, std::string mqtt_topic, int qos);
+    void register_mqtt_pub(std::shared_ptr<ApiRouteTask> task, std::string ros_topic, std::string mqtt_topic, int qos,
                            bool retain, bool is_state);
-    void register_http_service_bridge(std::string ros_service, std::string http_path);
-    void register_ws_sub(std::string ros_topic, std::string ws_path);
-    void register_ws_pub(std::string ros_topic, std::string ws_path, bool is_state);
+    void register_http_service_bridge(std::shared_ptr<ApiRouteTask> task, std::string ros_service, std::string http_path);
+    void register_ws_sub(std::shared_ptr<ApiRouteTask> task, std::string ros_topic, std::string ws_path);
+    void register_ws_pub(std::shared_ptr<ApiRouteTask> task, std::string ros_topic, std::string ws_path, bool is_state);
 
     bool parse_ros_msg(const std::string &ros_topic, std::string msg_data,
                        nlohmann::json &current_json);

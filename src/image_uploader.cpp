@@ -17,6 +17,11 @@ void ImageUploader::start() {
                   << ", interval: " << config_.interval_ms << "ms)");
 }
 
+void ImageUploader::stop() {
+  sub_.shutdown();
+  ROS_INFO_STREAM("[ImageUploader] Stopped subscription on '" << config_.ros_topic << "'");
+}
+
 void ImageUploader::on_compressed_image(const sensor_msgs::CompressedImage::ConstPtr &msg) {
   ros::Time now = ros::Time::now();
   if (config_.interval_ms > 0 && last_upload_time_ != ros::Time(0) &&

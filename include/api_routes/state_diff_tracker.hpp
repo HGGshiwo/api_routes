@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <mutex>
 
 class StateDiffTracker {
 public:
@@ -44,6 +45,7 @@ public:
       return nlohmann::json::object();
     }
 
+    std::lock_guard<std::mutex> lock(mutex_);
     nlohmann::json diff_json = nlohmann::json::object();
 
     for (auto it = current_json.begin(); it != current_json.end(); ++it) {
@@ -61,9 +63,11 @@ public:
   }
 
   nlohmann::json get_last_state() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     return last_state_;
   }
 
 private:
+  mutable std::mutex mutex_;
   nlohmann::json last_state_ = nlohmann::json::object();
 };

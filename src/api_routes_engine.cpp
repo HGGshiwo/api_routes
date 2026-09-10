@@ -75,9 +75,16 @@ void ApiRoutesEngine::on_event(const dk::MqttConnectEvent &event, AppContext &ct
 
     nlohmann::json last_state = state_diff_tracker_->get_last_state();
     if (!last_state.empty()) {
-        publish_mqtt_msg(last_state, "/device/$/state", 0, false);
+        publish_mqtt_msg(last_state, "device/$/state", 0, false);
     }
-    for (const auto &cb : reconnect_callbacks_) {
+    std::vector<std::function<void()>> cbs_to_call;
+    {
+        std::lock_guard<std::mutex> lock(callbacks_mutex_);
+        for (const auto &pair : reconnect_callbacks_) {
+            cbs_to_call.push_back(pair.second);
+        }
+    }
+    for (const auto &cb : cbs_to_call) {
         cb();
     }
 }
@@ -117,7 +124,20 @@ void ApiRoutesEngine::on_tick(double dt, AppContext &ctx) {
     }
 
     if (is_hz(0.5) && device_code_.has_value()) {
-        for (const auto &cb : state_heartbeat_callbacks_) {
+        // 定时全量心跳保底：即使机器人静止未产生差量，也定期上报一次全量状态
+        nlohmann::json last_state = state_diff_tracker_->get_last_state();
+        if (!last_state.empty()) {
+            publish_mqtt_msg(last_state, "device/$/state", 0, false);
+        }
+
+        std::vector<std::function<void()>> cbs_to_call;
+        {
+            std::lock_guard<std::mutex> lock(callbacks_mutex_);
+            for (const auto &pair : state_heartbeat_callbacks_) {
+                cbs_to_call.push_back(pair.second);
+            }
+        }
+        for (const auto &cb : cbs_to_call) {
             cb();
         }
     }
@@ -189,23 +209,26 @@ void ApiRoutesEngine::publish_in_memory_state() {
         state_diff_tracker_->update_and_get_diff(current_json);
 
     if (diff_json.empty()) {
-        ROS_DEBUG_THROTTLE(2.0,
-            "[ApiRoutes Diag] In-memory state diff is empty (all values delta < 0.01).");
+        ROS_INFO_THROTTLE(2.0,
+            "[Telemetry Diff] Suppressed: all telemetry values delta < 0.01 (robot stationary).");
         return;
     }
 
     if (!diff_json.contains("mapLocation")) {
-        ROS_DEBUG_THROTTLE(2.0,
-            "[ApiRoutes Diag] diff_json sent without mapLocation (pos delta < 0.01m).");
+        ROS_INFO_THROTTLE(2.0,
+            "[Telemetry Diff] Telemetry diff generated without mapLocation (pos delta < 0.01m).");
     }
 
     diff_json["deviceCode"] = device_code_.value_or("");
     diff_json["timestamp"] = (uint64_t)(get_time_provider()->now() * 1000);
     diff_json["type"] = "state";
 
+    std::string mqtt_topic = resolve_topic("device/$/state");
     if (mqtt_adapter_) {
-        mqtt_adapter_->publish(resolve_topic("device/$/state"), diff_json.dump(),
-                               0, false);
+        ROS_INFO_THROTTLE(1.0,
+            "[Telemetry Pub] Publishing to MQTT '%s': %s",
+            mqtt_topic.c_str(), diff_json.dump().c_str());
+        mqtt_adapter_->publish(mqtt_topic, diff_json.dump(), 0, false);
     }
     web_adapter_->publish_state_to_path("/ws", "/ws", convert_ws_keys(diff_json));
 }
@@ -251,7 +274,7 @@ bool ApiRoutesEngine::parse_ros_msg(const std::string &ros_topic,
 void ApiRoutesEngine::publish_mqtt_msg(nlohmann::json &data,
                                        const std::string &mqtt_topic,
                                        const int &qos, const bool &retain) {
-    data["deviceCode"] = device_code_.value();
+    data["deviceCode"] = device_code_.value_or("");
     data["timestamp"] = (uint64_t)(get_time_provider()->now() * 1000);
     data["type"] = "state";
     mqtt_adapter_->publish(resolve_topic(mqtt_topic), data.dump(), qos, retain);
