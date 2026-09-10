@@ -193,69 +193,75 @@ void ApiRoutesEngine::create_task(const std::string &key, XmlRpc::XmlRpcValue &v
 }
 
 void ApiRoutesEngine::setup_all_topic() {
-    if (!device_code_.has_value()) return;
+    try {
+        if (!device_code_.has_value()) return;
 
-    std::string api_param_ns = ROSNODE_NAME + "/api";
-    XmlRpc::XmlRpcValue namespace_params;
-    if (!ros::param::get(api_param_ns, namespace_params)) {
+        std::string api_param_ns = ROSNODE_NAME + "/api";
+        XmlRpc::XmlRpcValue namespace_params;
+        if (!ros::param::get(api_param_ns, namespace_params)) {
+            std::vector<std::string> keys_to_destroy;
+            {
+                std::lock_guard<std::mutex> lock(routes_mutex_);
+                for (const auto &p : active_tasks_) {
+                    keys_to_destroy.push_back(p.first);
+                }
+            }
+            for (const auto &k : keys_to_destroy) {
+                destroy_task(k);
+            }
+            return;
+        }
+
+        if (namespace_params.getType() != XmlRpc::XmlRpcValue::TypeStruct) {
+            ROS_ERROR_STREAM("[ApiRoutes] param in " << api_param_ns
+                                                     << " is not struct!");
+            return;
+        }
+
+        // 1. Detect removed keys
         std::vector<std::string> keys_to_destroy;
         {
             std::lock_guard<std::mutex> lock(routes_mutex_);
             for (const auto &p : active_tasks_) {
-                keys_to_destroy.push_back(p.first);
+                if (!namespace_params.hasMember(p.first)) {
+                    keys_to_destroy.push_back(p.first);
+                }
             }
         }
         for (const auto &k : keys_to_destroy) {
+            ROS_INFO_STREAM("[ApiRoutes] rosparam key removed: " << k);
             destroy_task(k);
         }
-        return;
-    }
 
-    if (namespace_params.getType() != XmlRpc::XmlRpcValue::TypeStruct) {
-        ROS_ERROR_STREAM("[ApiRoutes] param in " << api_param_ns
-                                                 << " is not struct!");
-        return;
-    }
+        // 2. Detect modified or added keys
+        for (auto it = namespace_params.begin(); it != namespace_params.end();
+             ++it) {
+            std::string key = it->first;
+            XmlRpc::XmlRpcValue &val = it->second;
 
-    // 1. Detect removed keys
-    std::vector<std::string> keys_to_destroy;
-    {
-        std::lock_guard<std::mutex> lock(routes_mutex_);
-        for (const auto &p : active_tasks_) {
-            if (!namespace_params.hasMember(p.first)) {
-                keys_to_destroy.push_back(p.first);
-            }
-        }
-    }
-    for (const auto &k : keys_to_destroy) {
-        ROS_INFO_STREAM("[ApiRoutes] rosparam key removed: " << k);
-        destroy_task(k);
-    }
-
-    // 2. Detect modified or added keys
-    for (auto it = namespace_params.begin(); it != namespace_params.end();
-         ++it) {
-        std::string key = it->first;
-        XmlRpc::XmlRpcValue &val = it->second;
-
-        bool key_modified = false;
-        {
-            std::lock_guard<std::mutex> lock(routes_mutex_);
-            auto existing_it = active_tasks_.find(key);
-            if (existing_it != active_tasks_.end()) {
-                if (is_param_equal(existing_it->second->config, val)) {
-                    continue;
+            bool key_modified = false;
+            {
+                std::lock_guard<std::mutex> lock(routes_mutex_);
+                auto existing_it = active_tasks_.find(key);
+                if (existing_it != active_tasks_.end()) {
+                    if (is_param_equal(existing_it->second->config, val)) {
+                        continue;
+                    }
+                    ROS_INFO_STREAM("[ApiRoutes] rosparam key modified: " << key);
+                    key_modified = true;
                 }
-                ROS_INFO_STREAM("[ApiRoutes] rosparam key modified: " << key);
-                key_modified = true;
             }
-        }
 
-        if (key_modified) {
-            destroy_task(key);
-        }
+            if (key_modified) {
+                destroy_task(key);
+            }
 
-        create_task(key, val);
+            create_task(key, val);
+        }
+    } catch (const std::exception &e) {
+        ROS_WARN_STREAM("[ApiRoutes] Exception in setup_all_topic: " << e.what());
+    } catch (...) {
+        ROS_WARN("[ApiRoutes] Unknown exception in setup_all_topic");
     }
 }
 
@@ -305,18 +311,24 @@ void ApiRoutesEngine::register_mqtt_pub(std::shared_ptr<ApiRouteTask> task,
         std::lock_guard<std::mutex> lock(callbacks_mutex_);
         reconnect_callbacks_[cb_key] =
             [this, mqtt_topic, qos, retain, tracker]() {
-                nlohmann::json last_state = tracker->get_last_state();
-                if (!last_state.empty()) {
-                    publish_mqtt_msg(last_state, mqtt_topic, qos, retain);
-                }
+                try {
+                    if (!tracker) return;
+                    nlohmann::json last_state = tracker->get_last_state();
+                    if (!last_state.empty()) {
+                        publish_mqtt_msg(last_state, mqtt_topic, qos, retain);
+                    }
+                } catch (...) {}
             };
 
         state_heartbeat_callbacks_[cb_key] =
             [this, mqtt_topic, qos, retain, tracker]() {
-                nlohmann::json last_state = tracker->get_last_state();
-                if (!last_state.empty()) {
-                    publish_mqtt_msg(last_state, mqtt_topic, qos, retain);
-                }
+                try {
+                    if (!tracker) return;
+                    nlohmann::json last_state = tracker->get_last_state();
+                    if (!last_state.empty()) {
+                        publish_mqtt_msg(last_state, mqtt_topic, qos, retain);
+                    }
+                } catch (...) {}
             };
     }
 
@@ -324,28 +336,35 @@ void ApiRoutesEngine::register_mqtt_pub(std::shared_ptr<ApiRouteTask> task,
         ros_topic, 1000,
         [this, mqtt_topic, qos, retain, ros_topic, is_state,
          tracker](const std_msgs::String::ConstPtr &msg) -> void {
-            if (is_state) {
-                nlohmann::json current_json;
-                if (!parse_ros_msg(ros_topic, msg->data, current_json)) return;
-                nlohmann::json diff_json =
-                    tracker->update_and_get_diff(current_json);
-                if (diff_json.empty()) return;
-                publish_mqtt_msg(diff_json, mqtt_topic, qos, retain);
-            } else {
-                try {
-                    nlohmann::json j = nlohmann::json::parse(msg->data);
-                    if (j.is_object()) {
-                        j["deviceCode"] = device_code_.value_or("");
-                        mqtt_adapter_->publish(resolve_topic(mqtt_topic),
-                                               j.dump(), qos, retain);
-                        return;
+            try {
+                if (!msg) return;
+                if (is_state) {
+                    if (!tracker) return;
+                    nlohmann::json current_json;
+                    if (!parse_ros_msg(ros_topic, msg->data, current_json)) return;
+                    nlohmann::json diff_json =
+                        tracker->update_and_get_diff(current_json);
+                    if (diff_json.empty()) return;
+                    publish_mqtt_msg(diff_json, mqtt_topic, qos, retain);
+                } else {
+                    if (!mqtt_adapter_) return;
+                    try {
+                        nlohmann::json j = nlohmann::json::parse(msg->data);
+                        if (j.is_object()) {
+                            j["deviceCode"] = device_code_.value_or("");
+                            mqtt_adapter_->publish(resolve_topic(mqtt_topic),
+                                                   j.dump(), qos, retain);
+                            return;
+                        }
+                    } catch (...) {
+                        // 非合法 json 格式，跳过加入 deviceCode，直接原始发布
                     }
-                } catch (...) {
-                    // 非合法 json 格式，跳过加入 deviceCode，直接原始发布
+                    mqtt_adapter_->publish(resolve_topic(mqtt_topic), msg->data,
+                                           qos, retain);
                 }
-                mqtt_adapter_->publish(resolve_topic(mqtt_topic), msg->data,
-                                       qos, retain);
-            }
+            } catch (const std::exception &e) {
+                ROS_WARN_STREAM("[ApiRoutes] Exception in topic sub callback: " << e.what());
+            } catch (...) {}
         });
 
     {
@@ -360,11 +379,11 @@ void ApiRoutesEngine::register_http_service_bridge(
     std::string http_path) {
     class HttpRosBridgeHandler : public dk::IProtocolHandler<WebAdapter> {
         std::string ros_service_;
-        ApiRoutesEngine *engine_;
+        boost::asio::io_context &ioc_;
 
        public:
-        HttpRosBridgeHandler(std::string service, ApiRoutesEngine *engine)
-            : ros_service_(std::move(service)), engine_(engine) {}
+        HttpRosBridgeHandler(std::string service, boost::asio::io_context &ioc)
+            : ros_service_(std::move(service)), ioc_(ioc) {}
 
         void handle(
             std::shared_ptr<dk::HttpSession<WebAdapter>> session,
@@ -373,29 +392,46 @@ void ApiRoutesEngine::register_http_service_bridge(
             try {
                 std::string req_str = req.body();
                 std::thread([session, service_name = ros_service_, req_str,
-                             &ioc = engine_->get_ioc()]() {
-                    api_routes::StringSrv srv;
-                    srv.request.request = req_str;
+                             &ioc = ioc_]() {
+                    try {
+                        api_routes::StringSrv srv;
+                        srv.request.request = req_str;
 
-                    if (ros::service::call(service_name, srv)) {
-                        boost::asio::post(
-                            ioc, [session, resp_str = srv.response.response]() {
-                                session->send_http_response(
-                                    boost::beast::http::status::ok, resp_str);
+                        if (ros::service::call(service_name, srv)) {
+                            boost::asio::post(
+                                ioc, [session, resp_str = srv.response.response]() {
+                                    try {
+                                        session->send_http_response(
+                                            boost::beast::http::status::ok, resp_str);
+                                    } catch (...) {}
+                                });
+                        } else {
+                            boost::asio::post(ioc, [session]() {
+                                try {
+                                    session->send_http_response(
+                                        boost::beast::http::status::
+                                            internal_server_error,
+                                        "{\"error\":\"ROS Service call failed\"}");
+                                } catch (...) {}
                             });
-                    } else {
-                        boost::asio::post(ioc, [session]() {
-                            session->send_http_response(
-                                boost::beast::http::status::
-                                    internal_server_error,
-                                "{\"error\":\"ROS Service call failed\"}");
+                        }
+                    } catch (const std::exception &e) {
+                        boost::asio::post(ioc, [session, err = std::string(e.what())]() {
+                            try {
+                                session->send_http_response(
+                                    boost::beast::http::status::
+                                        internal_server_error,
+                                    "{\"error\":\"" + err + "\"}");
+                            } catch (...) {}
                         });
-                    }
+                    } catch (...) {}
                 }).detach();
             } catch (const std::exception &e) {
-                session->send_http_response(
-                    boost::beast::http::status::bad_request,
-                    std::string("{\"error\":\"") + e.what() + "\"}");
+                try {
+                    session->send_http_response(
+                        boost::beast::http::status::bad_request,
+                        std::string("{\"error\":\"") + e.what() + "\"}");
+                } catch (...) {}
             }
         }
     };
@@ -403,7 +439,7 @@ void ApiRoutesEngine::register_http_service_bridge(
     std::string route_path = "/" + remove_slash(http_path);
     web_adapter_->register_handler(
         boost::beast::http::verb::post, route_path,
-        std::make_shared<HttpRosBridgeHandler>(ros_service, this));
+        std::make_shared<HttpRosBridgeHandler>(ros_service, get_ioc()));
     ROS_INFO_STREAM("[ApiRoutes] HTTP ROS Service Bridge registered: POST "
                     << route_path << " -> " << ros_service);
 }

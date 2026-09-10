@@ -21,125 +21,167 @@ class GetGpsHttpHandler : public dk::IProtocolHandler<ApiRoutesEngine::WebAdapte
 };
 
 void ApiRoutesEngine::on_start() {
-    std::string str = ros::package::getPath(ROSNODE_NAME);
-    fs::path p(str);
-    target_file_ = p / "config" / "device_code.yaml";
+    try {
+        std::string str = ros::package::getPath(ROSNODE_NAME);
+        fs::path p(str);
+        target_file_ = p / "config" / "device_code.yaml";
 
-    std::string mqtt_host =
-        private_nh_.param("mqtt_host", std::string("localhost"));
-    unsigned short mqtt_port = private_nh_.param("mqtt_port", 1883);
+        std::string mqtt_host =
+            private_nh_.param("mqtt_host", std::string("localhost"));
+        unsigned short mqtt_port = private_nh_.param("mqtt_port", 1883);
 
-    load_param();
+        load_param();
 
-    mqtt_adapter_ = std::make_shared<MqttAdapter>(shared_from_this(),
-                                                   mqtt_host, mqtt_port);
-    ROS_INFO_STREAM("[ApiRoutes] MQTT starting at " << mqtt_host << ":"
-                                                    << mqtt_port);
+        mqtt_adapter_ = std::make_shared<MqttAdapter>(shared_from_this(),
+                                                       mqtt_host, mqtt_port);
+        ROS_INFO_STREAM("[ApiRoutes] MQTT starting at " << mqtt_host << ":"
+                                                        << mqtt_port);
 
-    int web_port = private_nh_.param("web_port", 8000);
-    web_adapter_ = std::make_shared<WebAdapter>(
-        shared_from_this(), static_cast<unsigned short>(web_port));
-    ROS_INFO_STREAM("[ApiRoutes] Web starting at port " << web_port);
+        int web_port = private_nh_.param("web_port", 8000);
+        web_adapter_ = std::make_shared<WebAdapter>(
+            shared_from_this(), static_cast<unsigned short>(web_port));
+        ROS_INFO_STREAM("[ApiRoutes] Web starting at port " << web_port);
 
-    telemetry_ = std::make_shared<MavlinkTelemetry>(nh_, private_nh_);
-    state_diff_tracker_ = std::make_shared<StateDiffTracker>();
+        telemetry_ = std::make_shared<MavlinkTelemetry>(nh_, private_nh_);
+        state_diff_tracker_ = std::make_shared<StateDiffTracker>();
 
-    std::string cloud_host = private_nh_.param(
-        "cloud_host", std::string("localhost"));
-    int cloud_port = private_nh_.param(
-        "cloud_port", 8001);
-    std::string abnormal_topic = private_nh_.param(
-        "abnormal_report_topic", std::string("/abnormal/report"));
-    std::string abnormal_path = private_nh_.param(
-        "abnormal_report_uri", std::string("/abnormal/report"));
+        std::string cloud_host = private_nh_.param(
+            "cloud_host", std::string("localhost"));
+        int cloud_port = private_nh_.param(
+            "cloud_port", 8001);
+        std::string abnormal_topic = private_nh_.param(
+            "abnormal_report_topic", std::string("/abnormal/report"));
+        std::string abnormal_path = private_nh_.param(
+            "abnormal_report_uri", std::string("/abnormal/report"));
 
-    AbnormalReporter::Config abnormal_cfg;
-    abnormal_cfg.ros_topic = abnormal_topic;
-    abnormal_cfg.cloud_host = cloud_host;
-    abnormal_cfg.cloud_port = cloud_port;
-    abnormal_cfg.remote_path = abnormal_path;
+        AbnormalReporter::Config abnormal_cfg;
+        abnormal_cfg.ros_topic = abnormal_topic;
+        abnormal_cfg.cloud_host = cloud_host;
+        abnormal_cfg.cloud_port = cloud_port;
+        abnormal_cfg.remote_path = abnormal_path;
 
-    abnormal_reporter_ = std::make_shared<AbnormalReporter>(
-        nh_, telemetry_, [this]() { return device_code_.value_or(""); },
-        abnormal_cfg);
-    abnormal_reporter_->start();
+        abnormal_reporter_ = std::make_shared<AbnormalReporter>(
+            nh_, telemetry_, [this]() { return device_code_.value_or(""); },
+            abnormal_cfg);
+        abnormal_reporter_->start();
 
-    setup_mqtt();
-    setup_http_get_gps();
-    setup_ws_state();
+        setup_mqtt();
+        setup_http_get_gps();
+        setup_ws_state();
+    } catch (const std::exception &e) {
+        ROS_ERROR_STREAM("[ApiRoutes] Exception in on_start: " << e.what());
+    } catch (...) {
+        ROS_ERROR("[ApiRoutes] Unknown exception in on_start!");
+    }
 }
 
 void ApiRoutesEngine::on_event(const dk::MqttConnectEvent &event, AppContext &ctx) {
-    if (!device_code_.has_value()) return;
-    ROS_INFO("[ApiRoutes] MQTT connected, publishing full state telemetry...");
+    try {
+        if (!device_code_.has_value()) return;
+        ROS_INFO("[ApiRoutes] MQTT connected, publishing full state telemetry...");
 
-    nlohmann::json last_state = state_diff_tracker_->get_last_state();
-    if (!last_state.empty()) {
-        publish_mqtt_msg(last_state, "device/$/state", 0, false);
-    }
-    std::vector<std::function<void()>> cbs_to_call;
-    {
-        std::lock_guard<std::mutex> lock(callbacks_mutex_);
-        for (const auto &pair : reconnect_callbacks_) {
-            cbs_to_call.push_back(pair.second);
-        }
-    }
-    for (const auto &cb : cbs_to_call) {
-        cb();
-    }
-}
-
-void ApiRoutesEngine::on_event(const dk::WsOpenEvent &event, AppContext &ctx) {
-    ROS_INFO_STREAM("[ApiRoutes] WebSocket connection on path: " << event.path);
-    std::lock_guard<std::mutex> lock(ws_open_callbacks_mutex_);
-    auto it = ws_open_callbacks_.find(event.path);
-    if (it != ws_open_callbacks_.end()) {
-        it->second(event.conn);
-    }
-}
-
-void ApiRoutesEngine::on_tick(double dt, AppContext &ctx) {
-    publish_in_memory_state();
-
-    if (is_hz(1.0)) {
-        setup_all_topic();
-
-        if (telemetry_) {
-            auto diag = telemetry_->getOdomDiag();
-            std::ostringstream oss;
-            oss << "[ApiRoutes Diag] odom_topic=" << diag.topic
-                << " | pubs=" << diag.num_publishers
-                << " | rx_cnt=" << diag.msg_count
-                << " | age=";
-            if (diag.age_sec >= 0) {
-                oss << std::fixed << std::setprecision(2) << diag.age_sec << "s";
-            } else {
-                oss << "NONE";
-            }
-            oss << " | pos=[" << std::fixed << std::setprecision(3)
-                << diag.pos_x << ", " << diag.pos_y << ", " << diag.pos_z << "]"
-                << " | dev=" << device_code_.value_or("UNSET");
-            ROS_INFO_STREAM(oss.str());
-        }
-    }
-
-    if (is_hz(0.5) && device_code_.has_value()) {
-        // 定时全量心跳保底：即使机器人静止未产生差量，也定期上报一次全量状态
         nlohmann::json last_state = state_diff_tracker_->get_last_state();
         if (!last_state.empty()) {
             publish_mqtt_msg(last_state, "device/$/state", 0, false);
         }
-
         std::vector<std::function<void()>> cbs_to_call;
         {
             std::lock_guard<std::mutex> lock(callbacks_mutex_);
-            for (const auto &pair : state_heartbeat_callbacks_) {
-                cbs_to_call.push_back(pair.second);
+            for (const auto &pair : reconnect_callbacks_) {
+                if (pair.second) {
+                    cbs_to_call.push_back(pair.second);
+                }
             }
         }
         for (const auto &cb : cbs_to_call) {
-            cb();
+            try {
+                cb();
+            } catch (const std::exception &e) {
+                ROS_WARN_STREAM("[ApiRoutes] Reconnect callback exception: " << e.what());
+            } catch (...) {}
         }
+    } catch (const std::exception &e) {
+        ROS_WARN_STREAM("[ApiRoutes] Exception in MqttConnectEvent handler: " << e.what());
+    } catch (...) {
+        ROS_WARN("[ApiRoutes] Unknown exception in MqttConnectEvent handler");
+    }
+}
+
+void ApiRoutesEngine::on_event(const dk::WsOpenEvent &event, AppContext &ctx) {
+    try {
+        ROS_INFO_STREAM("[ApiRoutes] WebSocket connection on path: " << event.path);
+        std::lock_guard<std::mutex> lock(ws_open_callbacks_mutex_);
+        auto it = ws_open_callbacks_.find(event.path);
+        if (it != ws_open_callbacks_.end() && it->second) {
+            it->second(event.conn);
+        }
+    } catch (const std::exception &e) {
+        ROS_WARN_STREAM("[ApiRoutes] Exception in WsOpenEvent handler: " << e.what());
+    } catch (...) {
+        ROS_WARN("[ApiRoutes] Unknown exception in WsOpenEvent handler");
+    }
+}
+
+void ApiRoutesEngine::on_tick(double dt, AppContext &ctx) {
+    try {
+        publish_in_memory_state();
+
+        if (is_hz(1.0)) {
+            try {
+                setup_all_topic();
+            } catch (const std::exception &e) {
+                ROS_WARN_STREAM("[ApiRoutes] setup_all_topic exception: " << e.what());
+            } catch (...) {}
+
+            if (telemetry_) {
+                auto diag = telemetry_->getOdomDiag();
+                std::ostringstream oss;
+                oss << "[ApiRoutes Diag] odom_topic=" << diag.topic
+                    << " | pubs=" << diag.num_publishers
+                    << " | rx_cnt=" << diag.msg_count
+                    << " | age=";
+                if (diag.age_sec >= 0) {
+                    oss << std::fixed << std::setprecision(2) << diag.age_sec << "s";
+                } else {
+                    oss << "NONE";
+                }
+                oss << " | pos=[" << std::fixed << std::setprecision(3)
+                    << diag.pos_x << ", " << diag.pos_y << ", " << diag.pos_z << "]"
+                    << " | dev=" << device_code_.value_or("UNSET");
+                ROS_INFO_STREAM(oss.str());
+            }
+        }
+
+        if (is_hz(0.5) && device_code_.has_value()) {
+            // 定时全量心跳保底：即使机器人静止未产生差量，也定期上报一次全量状态
+            if (state_diff_tracker_) {
+                nlohmann::json last_state = state_diff_tracker_->get_last_state();
+                if (!last_state.empty()) {
+                    publish_mqtt_msg(last_state, "device/$/state", 0, false);
+                }
+            }
+
+            std::vector<std::function<void()>> cbs_to_call;
+            {
+                std::lock_guard<std::mutex> lock(callbacks_mutex_);
+                for (const auto &pair : state_heartbeat_callbacks_) {
+                    if (pair.second) {
+                        cbs_to_call.push_back(pair.second);
+                    }
+                }
+            }
+            for (const auto &cb : cbs_to_call) {
+                try {
+                    cb();
+                } catch (const std::exception &e) {
+                    ROS_WARN_STREAM("[ApiRoutes] Heartbeat callback exception: " << e.what());
+                } catch (...) {}
+            }
+        }
+    } catch (const std::exception &e) {
+        ROS_ERROR_STREAM("[ApiRoutes] Exception in on_tick: " << e.what());
+    } catch (...) {
+        ROS_ERROR("[ApiRoutes] Unknown fatal exception in on_tick!");
     }
 }
 
@@ -196,67 +238,94 @@ void ApiRoutesEngine::setup_ws_state() {
 }
 
 void ApiRoutesEngine::publish_in_memory_state() {
-    if (!device_code_.has_value()) {
-        ROS_WARN_THROTTLE(5.0,
-            "[ApiRoutes Diag] publish_in_memory_state: device_code_ is UNSET, skipping state upload!");
-        return;
+    try {
+        if (!device_code_.has_value()) {
+            ROS_WARN_THROTTLE(5.0,
+                "[ApiRoutes Diag] publish_in_memory_state: device_code_ is UNSET, skipping state upload!");
+            return;
+        }
+
+        if (!telemetry_ || !state_diff_tracker_) return;
+
+        nlohmann::json current_json = telemetry_->getMergedState();
+        if (current_json.empty()) return;
+
+        nlohmann::json diff_json =
+            state_diff_tracker_->update_and_get_diff(current_json);
+
+        if (diff_json.empty()) {
+            ROS_INFO_THROTTLE(2.0,
+                "[Telemetry Diff] Suppressed: all telemetry values delta < 0.01 (robot stationary).");
+            return;
+        }
+
+        if (!diff_json.contains("mapLocation")) {
+            ROS_INFO_THROTTLE(2.0,
+                "[Telemetry Diff] Telemetry diff generated without mapLocation (pos delta < 0.01m).");
+        }
+
+        diff_json["deviceCode"] = device_code_.value_or("");
+        diff_json["timestamp"] = (uint64_t)(get_time_provider()->now() * 1000);
+        diff_json["type"] = "state";
+
+        std::string mqtt_topic = resolve_topic("device/$/state");
+        if (mqtt_adapter_) {
+            ROS_INFO_THROTTLE(1.0,
+                "[Telemetry Pub] Publishing to MQTT '%s': %s",
+                mqtt_topic.c_str(), diff_json.dump().c_str());
+            mqtt_adapter_->publish(mqtt_topic, diff_json.dump(), 0, false);
+        }
+        if (web_adapter_) {
+            web_adapter_->publish_state_to_path("/ws", "/ws", convert_ws_keys(diff_json));
+        }
+    } catch (const std::exception &e) {
+        ROS_WARN_STREAM("[ApiRoutes] Exception in publish_in_memory_state: " << e.what());
+    } catch (...) {
+        ROS_WARN("[ApiRoutes] Unknown exception in publish_in_memory_state");
     }
-
-    nlohmann::json current_json = telemetry_->getMergedState();
-    if (current_json.empty()) return;
-
-    nlohmann::json diff_json =
-        state_diff_tracker_->update_and_get_diff(current_json);
-
-    if (diff_json.empty()) {
-        ROS_INFO_THROTTLE(2.0,
-            "[Telemetry Diff] Suppressed: all telemetry values delta < 0.01 (robot stationary).");
-        return;
-    }
-
-    if (!diff_json.contains("mapLocation")) {
-        ROS_INFO_THROTTLE(2.0,
-            "[Telemetry Diff] Telemetry diff generated without mapLocation (pos delta < 0.01m).");
-    }
-
-    diff_json["deviceCode"] = device_code_.value_or("");
-    diff_json["timestamp"] = (uint64_t)(get_time_provider()->now() * 1000);
-    diff_json["type"] = "state";
-
-    std::string mqtt_topic = resolve_topic("device/$/state");
-    if (mqtt_adapter_) {
-        ROS_INFO_THROTTLE(1.0,
-            "[Telemetry Pub] Publishing to MQTT '%s': %s",
-            mqtt_topic.c_str(), diff_json.dump().c_str());
-        mqtt_adapter_->publish(mqtt_topic, diff_json.dump(), 0, false);
-    }
-    web_adapter_->publish_state_to_path("/ws", "/ws", convert_ws_keys(diff_json));
 }
 
 void ApiRoutesEngine::setup_mqtt() {
-    if (device_code_.has_value()) {
-        ROS_INFO_STREAM("[Mqtt] use existing code: " << device_code_.value());
-        ros::param::set("/device_code", device_code_.value());
-        mqtt_adapter_->connect(device_code_.value());
-        setup_all_topic();
-    } else {
-        mqtt_adapter_->register_publish_handler<RegisterEvent>(
-            "$exclusive/register", [this](const RegisterEvent &data) -> void {
-                if (!device_code_.has_value()) {
-                    device_code_ = data.deviceCode;
-                    ros::param::set("/device_code", device_code_.value());
-                    mqtt_adapter_->connect(device_code_.value());
-                    setup_all_topic();
+    try {
+        if (!mqtt_adapter_) return;
+        if (device_code_.has_value()) {
+            ROS_INFO_STREAM("[Mqtt] use existing code: " << device_code_.value());
+            try {
+                ros::param::set("/device_code", device_code_.value());
+            } catch (...) {}
+            mqtt_adapter_->connect(device_code_.value());
+            setup_all_topic();
+        } else {
+            mqtt_adapter_->register_publish_handler<RegisterEvent>(
+                "$exclusive/register", [this](const RegisterEvent &data) -> void {
+                    try {
+                        if (!device_code_.has_value()) {
+                            device_code_ = data.deviceCode;
+                            try {
+                                ros::param::set("/device_code", device_code_.value());
+                            } catch (...) {}
+                            if (mqtt_adapter_) {
+                                mqtt_adapter_->connect(device_code_.value());
+                            }
+                            setup_all_topic();
 
-                    private_nh_.setParam("device_code", device_code_.value());
-                    save_param("device_code", device_code_.value());
+                            private_nh_.setParam("device_code", device_code_.value());
+                            save_param("device_code", device_code_.value());
 
-                    ROS_INFO_STREAM(
-                        "[Mqtt] register with code: " << device_code_.value());
-                }
-            });
+                            ROS_INFO_STREAM(
+                                "[Mqtt] register with code: " << device_code_.value());
+                        }
+                    } catch (const std::exception &e) {
+                        ROS_WARN_STREAM("[ApiRoutes] Exception in register handler: " << e.what());
+                    } catch (...) {}
+                });
 
-        mqtt_adapter_->connect();
+            mqtt_adapter_->connect();
+        }
+    } catch (const std::exception &e) {
+        ROS_WARN_STREAM("[ApiRoutes] Exception in setup_mqtt: " << e.what());
+    } catch (...) {
+        ROS_WARN("[ApiRoutes] Unknown exception in setup_mqtt");
     }
 }
 
@@ -274,33 +343,51 @@ bool ApiRoutesEngine::parse_ros_msg(const std::string &ros_topic,
 void ApiRoutesEngine::publish_mqtt_msg(nlohmann::json &data,
                                        const std::string &mqtt_topic,
                                        const int &qos, const bool &retain) {
-    data["deviceCode"] = device_code_.value_or("");
-    data["timestamp"] = (uint64_t)(get_time_provider()->now() * 1000);
-    data["type"] = "state";
-    mqtt_adapter_->publish(resolve_topic(mqtt_topic), data.dump(), qos, retain);
+    try {
+        if (!mqtt_adapter_) return;
+        data["deviceCode"] = device_code_.value_or("");
+        data["timestamp"] = (uint64_t)(get_time_provider()->now() * 1000);
+        data["type"] = "state";
+        mqtt_adapter_->publish(resolve_topic(mqtt_topic), data.dump(), qos, retain);
+    } catch (const std::exception &e) {
+        ROS_WARN_STREAM("[ApiRoutes] Exception in publish_mqtt_msg: " << e.what());
+    } catch (...) {
+        ROS_WARN("[ApiRoutes] Unknown exception in publish_mqtt_msg");
+    }
 }
 
 void ApiRoutesEngine::load_param() {
-    if (!fs::exists(target_file_)) return;
-    YAML::Node config = YAML::LoadFile(target_file_.string());
-    if (config["device_code"] && config["device_code"].IsDefined() &&
-        !config["device_code"].IsNull()) {
-        device_code_ = config["device_code"].as<std::string>();
-        ros::param::set("/device_code", device_code_.value());
-    } else {
+    try {
+        if (!fs::exists(target_file_)) return;
+        YAML::Node config = YAML::LoadFile(target_file_.string());
+        if (config["device_code"] && config["device_code"].IsDefined() &&
+            !config["device_code"].IsNull()) {
+            device_code_ = config["device_code"].as<std::string>();
+            try {
+                ros::param::set("/device_code", device_code_.value());
+            } catch (...) {}
+        } else {
+            device_code_ = std::nullopt;
+        }
+    } catch (const std::exception &e) {
+        ROS_WARN_STREAM("[ApiRoutes] load_param failed: " << e.what());
         device_code_ = std::nullopt;
     }
 }
 
 template <typename T>
 void ApiRoutesEngine::save_param(const std::string &key, const T &value) {
-    YAML::Node root;
-    root[key] = value;
-    fs::create_directories(target_file_.parent_path());
-    std::ofstream fout(target_file_);
-    if (fout.is_open()) {
-        fout << root;
-    }
+    try {
+        YAML::Node root;
+        root[key] = value;
+        fs::create_directories(target_file_.parent_path());
+        std::ofstream fout(target_file_);
+        if (fout.is_open()) {
+            fout << root;
+        }
+    } catch (const std::exception &e) {
+        ROS_WARN_STREAM("[ApiRoutes] save_param failed: " << e.what());
+    } catch (...) {}
 }
 
 std::string ApiRoutesEngine::remove_slash(std::string str) {

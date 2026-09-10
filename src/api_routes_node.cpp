@@ -23,21 +23,53 @@ class ApiRoutesNode {
     }
 
     ~ApiRoutesNode() {
+        stop();
+    }
+
+    void stop() {
+        // 1. 显式先停掉 Engine（取消所有内部 Ticker/定时器与事件分发），防止后台线程竞争与析构调用纯虚函数
+        if (engine_) {
+            try {
+                engine_->stop();
+            } catch (...) {}
+        }
+        // 2. 停止 Asio 事件循环并安全等待线程退出
         ioc_.stop();
         if (asio_thread_.joinable()) {
             asio_thread_.join();
         }
+        // 3. 在所有后台线程安全退出后释放 engine 资源
+        engine_.reset();
     }
 };
 
 int main(int argc, char **argv) {
-    ros::init(argc, argv, ROSNODE_NAME);
+    try {
+        ros::init(argc, argv, ROSNODE_NAME);
 
-    ros::AsyncSpinner spinner(4);
-    spinner.start();
+        ros::AsyncSpinner spinner(4);
+        spinner.start();
 
-    ApiRoutesNode node;
+        try {
+            auto node = std::make_unique<ApiRoutesNode>();
+            ros::waitForShutdown();
+            if (node) {
+                node->stop();
+                node.reset();
+            }
+        } catch (const std::exception &e) {
+            ROS_ERROR_STREAM("[ApiRoutes] Exception in ApiRoutesNode lifecycle: " << e.what());
+        } catch (...) {
+            ROS_ERROR("[ApiRoutes] Unknown exception in ApiRoutesNode lifecycle!");
+        }
 
-    ros::waitForShutdown();
+        spinner.stop();
+    } catch (const std::exception &e) {
+        ROS_ERROR_STREAM("[ApiRoutes] Fatal exception in main: " << e.what());
+        return 1;
+    } catch (...) {
+        ROS_ERROR("[ApiRoutes] Unknown fatal exception in main!");
+        return 1;
+    }
     return 0;
 }
