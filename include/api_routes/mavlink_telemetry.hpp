@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mavros_msgs/GPSRAW.h>
+#include <mavros_msgs/ParamPull.h>
 #include <mavros_msgs/State.h>
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
@@ -9,17 +10,19 @@
 #include <std_msgs/String.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <thread>
 
 #include "api_routes/datum_synchronizer.hpp"
 
 class MavlinkTelemetry {
    public:
     MavlinkTelemetry(ros::NodeHandle &nh, ros::NodeHandle &pnh);
-    ~MavlinkTelemetry() = default;
+    ~MavlinkTelemetry();
 
     // Get calculated MAVLink state merged with memory-stored /dank/status JSON
     nlohmann::json getMergedState();
@@ -51,14 +54,16 @@ class MavlinkTelemetry {
 
     void setupMavrosStreams(double rate);
     void computeGpsOut(double &lon_out, double &lat_out, double &alt_out);
+    void paramPullWorker();
 
-    // ROS Subscribers
+    // ROS Subscribers & Service Clients
     ros::Subscriber sub_state_;
     ros::Subscriber sub_local_odom_;
     ros::Subscriber sub_global_gps_;
     ros::Subscriber sub_gps_raw_;
     ros::Subscriber sub_rel_alt_;
     ros::Subscriber sub_dank_status_;
+    ros::ServiceClient param_pull_client_;
 
     std::mutex data_mutex_;
 
@@ -86,7 +91,15 @@ class MavlinkTelemetry {
     bool use_degrees_{false};
     double publish_rate_{20.0};
     bool fcu_connected_{false};
+    double param_pull_interval_{3.0};
+    std::atomic<bool> is_pulling_{false};
+    std::atomic<bool> shutting_down_{false};
     std::string odom_topic_{"/mavros/local_position/odom"};
+
+    // Worker thread and cv for non-blocking param pull
+    std::thread param_pull_thread_;
+    std::mutex pull_cv_mutex_;
+    std::condition_variable pull_cv_;
 
     // Buffer for extra /dank/status JSON received from ROS topic
     nlohmann::json dank_status_json_;

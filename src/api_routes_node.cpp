@@ -1,5 +1,6 @@
 #include <thread>
 #include "api_routes/api_routes_engine.hpp"
+#include "api_routes/crash_handler.hpp"
 
 class ApiRoutesNode {
     ros::NodeHandle nh_;
@@ -44,6 +45,9 @@ class ApiRoutesNode {
 };
 
 int main(int argc, char **argv) {
+    // 注册全局致命崩溃信号及未捕获异常追踪器，覆盖输出至 /tmp/api_routes_crash.log
+    CrashHandler::install("/tmp/api_routes_crash.log");
+
     try {
         ros::init(argc, argv, ROSNODE_NAME);
 

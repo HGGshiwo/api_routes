@@ -29,6 +29,12 @@ MavlinkTelemetry::MavlinkTelemetry(ros::NodeHandle &nh, ros::NodeHandle &pnh) {
         publish_rate_ = 20.0;
     }
 
+    pnh.param<double>("param_pull_interval", param_pull_interval_, 3.0);
+    if (param_pull_interval_ <= 0.0) {
+        ROS_WARN("Invalid param_pull_interval: %f. Setting to default 3.0s.", param_pull_interval_);
+        param_pull_interval_ = 3.0;
+    }
+
     sub_state_ =
         nh.subscribe("/mavros/state", 10, &MavlinkTelemetry::stateCallback, this);
     sub_local_odom_ = nh.subscribe(odom_topic_, 10,
@@ -43,7 +49,19 @@ MavlinkTelemetry::MavlinkTelemetry(ros::NodeHandle &nh, ros::NodeHandle &pnh) {
     sub_dank_status_ = nh.subscribe("/dank/status", 10,
                                     &MavlinkTelemetry::dankStatusCallback, this);
 
-    ROS_INFO("[MavlinkTelemetry] Initialized. Subscribed to MAVROS topics and /dank/status.");
+    param_pull_client_ = nh.serviceClient<mavros_msgs::ParamPull>("/mavros/param/pull");
+    param_pull_thread_ = std::thread(&MavlinkTelemetry::paramPullWorker, this);
+
+    ROS_INFO("[MavlinkTelemetry] Initialized. Subscribed to MAVROS topics, /dank/status, and auto param-pull worker enabled (interval: %.1fs).",
+             param_pull_interval_);
+}
+
+MavlinkTelemetry::~MavlinkTelemetry() {
+    shutting_down_.store(true);
+    pull_cv_.notify_all();
+    if (param_pull_thread_.joinable()) {
+        param_pull_thread_.join();
+    }
 }
 
 void MavlinkTelemetry::stateCallback(const mavros_msgs::State::ConstPtr &msg) {
@@ -55,6 +73,10 @@ void MavlinkTelemetry::stateCallback(const mavros_msgs::State::ConstPtr &msg) {
         fcu_connected_ = connected;
         connected_ = connected;
         mode_ = msg->mode;
+    }
+
+    if (connected != was_connected) {
+        pull_cv_.notify_all();
     }
 
     if (connected && !was_connected) {
@@ -329,3 +351,67 @@ MavlinkTelemetry::OdomDiag MavlinkTelemetry::getOdomDiag() {
     }
     return diag;
 }
+
+void MavlinkTelemetry::paramPullWorker() {
+    while (ros::ok() && !shutting_down_.load()) {
+        bool is_connected = false;
+        {
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            is_connected = fcu_connected_;
+        }
+
+        if (is_connected) {
+            // 已连接：休眠等待，连接状态改变或退出时会被条件变量唤醒
+            std::unique_lock<std::mutex> lock(pull_cv_mutex_);
+            pull_cv_.wait_for(lock, std::chrono::seconds(1), [this]() {
+                return shutting_down_.load() || !fcu_connected_;
+            });
+            continue;
+        }
+
+        // 未连接：检查 /mavros/param/pull 服务是否存在
+        if (!param_pull_client_.exists()) {
+            ROS_DEBUG_THROTTLE(10.0,
+                "[MavlinkTelemetry] FCU not connected and /mavros/param/pull service not ready.");
+            std::unique_lock<std::mutex> lock(pull_cv_mutex_);
+            pull_cv_.wait_for(lock, std::chrono::seconds(2), [this]() {
+                return shutting_down_.load();
+            });
+            continue;
+        }
+
+        // 触发拉取参数，此调用可能卡住 5 秒左右（仅在当前独立后台工作线程中阻塞）
+        ROS_INFO_THROTTLE(5.0,
+            "[MavlinkTelemetry] FCU not connected. Pulling parameters from MAVROS to trigger FCU heartbeat...");
+
+        is_pulling_.store(true);
+        mavros_msgs::ParamPull srv;
+        srv.request.force_pull = true;
+        bool call_ok = param_pull_client_.call(srv);
+        is_pulling_.store(false);
+
+        if (shutting_down_.load()) {
+            break;
+        }
+
+        if (call_ok) {
+            if (srv.response.success) {
+                ROS_INFO("[MavlinkTelemetry] Param pull succeeded (received: %u).",
+                         srv.response.param_received);
+            }
+        } else {
+            ROS_WARN_THROTTLE(10.0, "[MavlinkTelemetry] Call to /mavros/param/pull failed or timed out.");
+        }
+
+        // 防御措施：无论本次 pull 耗时多久（即使卡住 5 秒），
+        // 都在拉取完成后强制等待 param_pull_interval_ 缓冲冷却时间，
+        // 避免紧密连续拉取导致串口/飞控 CPU 占满，保证通信窗口平稳
+        {
+            std::unique_lock<std::mutex> lock(pull_cv_mutex_);
+            pull_cv_.wait_for(lock, std::chrono::duration<double>(param_pull_interval_), [this]() {
+                return shutting_down_.load();
+            });
+        }
+    }
+}
+

@@ -80,6 +80,7 @@ include_directories(
 )
 
 add_executable(api_routes_node
+  src/crash_handler.cpp
   src/mavlink_telemetry.cpp
   src/abnormal_reporter.cpp
   src/image_uploader.cpp
