@@ -14,3 +14,7 @@ struct OldJoystickEvent {
   double left_y = 0;
 };
 
+// @JSON_ENABLE
+struct SetSmootherEvent {
+  bool enable = true;
+};
