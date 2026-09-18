@@ -13,6 +13,7 @@
 #include "dk/adapters/web.hpp"
 #include "dk/engine.hpp"
 
+#include "ros/publisher.h"
 #include "ros/ros.h"
 #include "ros/package.h"
 #include "std_msgs/String.h"
@@ -41,6 +42,8 @@ struct ApiRouteTask {
     std::string callback_key;
 };
 
+enum ActionType {STAND_UP, LIE_DOWN};
+
 class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
    public:
     using AllowedEvents = std::tuple<dk::MqttConnectEvent, dk::WsOpenEvent>;
@@ -57,6 +60,8 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
     std::map<std::string, ros::Publisher> ros_pub_;
     std::map<std::string, ros::Subscriber> ros_sub_;
     std::vector<std::shared_ptr<ImageUploader>> image_uploaders_;
+    ros::Publisher cmd_vel_pub_;
+    ros::Publisher action_pub_;
 
     std::map<std::string, std::function<void()>> reconnect_callbacks_;
     std::map<std::string, std::function<void()>> state_heartbeat_callbacks_;
@@ -81,7 +86,12 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
 
    private:
     void setup_mqtt();
-    void setup_http_get_gps();
+    void setup_http_service();
+
+    nlohmann::json handle_get_gps();
+    nlohmann::json handle_joystick(const OldJoystickEvent &event);
+    nlohmann::json handle_action(ActionType action_type);
+
     void setup_ws_state();
     void publish_in_memory_state();
     void setup_all_topic();

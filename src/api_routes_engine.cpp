@@ -1,24 +1,10 @@
 #include "api_routes/api_routes_engine.hpp"
+#include "ros/node_handle.h"
+#include "ros/publisher.h"
+#include <geometry_msgs/Twist.h>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
-
-class GetGpsHttpHandler : public dk::IProtocolHandler<ApiRoutesEngine::WebAdapter> {
-    std::shared_ptr<MavlinkTelemetry> telemetry_;
-
-   public:
-    GetGpsHttpHandler(std::shared_ptr<MavlinkTelemetry> telemetry)
-        : telemetry_(telemetry) {}
-
-    void handle(
-        std::shared_ptr<dk::HttpSession<ApiRoutesEngine::WebAdapter>> session,
-        boost::beast::http::request<boost::beast::http::string_body> req)
-        override {
-        nlohmann::json res_json = telemetry_->getGpsResponseJson();
-        session->send_http_response(boost::beast::http::status::ok,
-                                    res_json.dump());
-    }
-};
 
 void ApiRoutesEngine::on_start() {
     try {
@@ -65,8 +51,11 @@ void ApiRoutesEngine::on_start() {
             abnormal_cfg);
         abnormal_reporter_->start();
 
+        cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("cmd_vel", 10);
+        action_pub_ = nh_.advertise<std_msgs::String>("dank/action", 10);
+
         setup_mqtt();
-        setup_http_get_gps();
+        setup_http_service();
         setup_ws_state();
     } catch (const std::exception &e) {
         ROS_ERROR_STREAM("[ApiRoutes] Exception in on_start: " << e.what());
@@ -185,13 +174,58 @@ void ApiRoutesEngine::on_tick(double dt, AppContext &ctx) {
     }
 }
 
-void ApiRoutesEngine::setup_http_get_gps() {
-    auto handler = std::make_shared<GetGpsHttpHandler>(telemetry_);
-    web_adapter_->register_handler(boost::beast::http::verb::post, "/get_gps",
-                                   handler);
+nlohmann::json ApiRoutesEngine::handle_get_gps() {
+    if (!telemetry_) {
+        return nlohmann::json{{"error", "telemetry not ready"}};
+    }
+    return telemetry_->getGpsResponseJson();
+}
+
+nlohmann::json ApiRoutesEngine::handle_joystick(const OldJoystickEvent &event) {
+    geometry_msgs::Twist twist;
+    twist.linear.x = event.right_y;
+    twist.linear.y = -event.right_x;
+    twist.linear.z = event.left_y;
+    twist.angular.z = -event.left_x;
+
+    if (cmd_vel_pub_) {
+        cmd_vel_pub_.publish(twist);
+    }
+    return nlohmann::json{{"status", "ok"}};
+}
+
+nlohmann::json ApiRoutesEngine::handle_action(ActionType action_type) {
+    
+    std_msgs::String action;
+    if(action_type == ActionType::STAND_UP) {
+        action.data = "stand";
+    }
+    else if(action_type == ActionType::LIE_DOWN) {
+        action.data = "lie";
+    }
+
+    if(action_pub_) {
+        action_pub_.publish(action);
+    }
+    return nlohmann::json{{"status", "ok"}};
+}
+
+void ApiRoutesEngine::setup_http_service() {
     web_adapter_->register_handler(boost::beast::http::verb::get, "/get_gps",
-                                   handler);
+                                   &ApiRoutesEngine::handle_get_gps, this);
     ROS_INFO("[ApiRoutes] HTTP /get_gps endpoint registered.");
+
+    web_adapter_->register_handler(boost::beast::http::verb::post, "/set_joystick",
+                                   &ApiRoutesEngine::handle_joystick, this);
+    ROS_INFO("[ApiRoutes] HTTP /set_joystick endpoints registered.");
+
+    web_adapter_->register_handler(boost::beast::http::verb::post, "/takeoff",
+                                &ApiRoutesEngine::handle_action, this, ActionType::STAND_UP);
+    ROS_INFO("[ApiRoutes] HTTP /takeoff endpoints registered.");                            
+    
+    web_adapter_->register_handler(boost::beast::http::verb::post, "/land",
+                                &ApiRoutesEngine::handle_action, this, ActionType::LIE_DOWN);
+    ROS_INFO("[ApiRoutes] HTTP /land endpoints registered."); 
 }
 
 static const std::map<std::string, std::string> key_map{

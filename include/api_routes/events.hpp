@@ -5,3 +5,12 @@
 struct RegisterEvent {
   std::string deviceCode;
 };
+
+// @JSON_ENABLE
+struct OldJoystickEvent {
+  double right_x = 0;
+  double right_y = 0;
+  double left_x = 0;
+  double left_y = 0;
+};
+
