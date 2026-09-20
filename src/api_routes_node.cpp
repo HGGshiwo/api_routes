@@ -1,4 +1,5 @@
 #include <thread>
+#include <ros/service.h>
 #include "api_routes/api_routes_engine.hpp"
 #include "api_routes/crash_handler.hpp"
 
@@ -53,6 +54,15 @@ int main(int argc, char **argv) {
 
         ros::AsyncSpinner spinner(4);
         spinner.start();
+
+        // 检查并等待 rosout 服务准备就绪，确保启动极早期的参数与路由日志可靠进入 rosout.log
+        ros::WallTime start_wait = ros::WallTime::now();
+        while (ros::ok() && !ros::service::exists("/rosout/get_loggers", true)) {
+            if ((ros::WallTime::now() - start_wait).toSec() > 3.0) {
+                break;
+            }
+            ros::WallDuration(0.05).sleep();
+        }
 
         try {
             auto node = std::make_unique<ApiRoutesNode>();

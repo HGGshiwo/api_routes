@@ -52,6 +52,8 @@ void ApiRoutesEngine::on_start() {
 
     cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("cmd_vel", 10);
     action_pub_ = nh_.advertise<std_msgs::String>("dank/action", 10);
+    routes_status_pub_ =
+        nh_.advertise<std_msgs::String>("/api_routes/routes_status", 1);
 
     setup_mqtt();
     setup_http_service();
@@ -66,6 +68,7 @@ void ApiRoutesEngine::on_start() {
 void ApiRoutesEngine::on_event(const dk::MqttConnectEvent &event,
                                AppContext &ctx) {
   try {
+    mqtt_connected_ = true;
     if (!device_code_.has_value())
       return;
     ROS_INFO("[ApiRoutes] MQTT connected, publishing full state telemetry...");
@@ -103,6 +106,7 @@ void ApiRoutesEngine::on_event(const dk::MqttConnectEvent &event,
 void ApiRoutesEngine::on_event(const dk::MqttDisconnectEvent &event,
                                AppContext &ctx) {
   try {
+    mqtt_connected_ = false;
     ROS_WARN_STREAM("[ApiRoutes] MQTT disconnected / connection lost: " << event.cause);
   } catch (const std::exception &e) {
     ROS_WARN_STREAM(
@@ -138,6 +142,10 @@ void ApiRoutesEngine::on_tick(double dt, AppContext &ctx) {
       } catch (const std::exception &e) {
         ROS_WARN_STREAM("[ApiRoutes] setup_all_topic exception: " << e.what());
       } catch (...) {
+      }
+
+      if (routes_status_pub_ && routes_status_pub_.getNumSubscribers() > 0) {
+        publish_routes_status();
       }
 
       if (telemetry_) {

@@ -410,6 +410,86 @@ void ApiRoutesEngine::setup_all_topic() {
     }
 }
 
+void ApiRoutesEngine::publish_routes_status() {
+    try {
+        if (!routes_status_pub_) return;
+
+        nlohmann::json status_json;
+        status_json["timestamp"] = ros::Time::now().toSec();
+        status_json["device_code"] = device_code_.value_or("");
+        status_json["ros_master_connected"] = ros::master::check();
+        status_json["mqtt_connected"] = mqtt_connected_.load();
+
+        nlohmann::json routes_obj = nlohmann::json::object();
+
+        std::lock_guard<std::mutex> lock(routes_mutex_);
+        status_json["active_routes_count"] = active_tasks_.size();
+
+        for (const auto &pair : active_tasks_) {
+            const std::string &key = pair.first;
+            const auto &task = pair.second;
+            if (!task) continue;
+
+            nlohmann::json task_info;
+            if (task->config.getType() == XmlRpc::XmlRpcValue::TypeStruct) {
+                for (auto it = task->config.begin(); it != task->config.end(); ++it) {
+                    const std::string &field = it->first;
+                    XmlRpc::XmlRpcValue &field_val = it->second;
+                    if (field_val.getType() == XmlRpc::XmlRpcValue::TypeString) {
+                        task_info[field] = static_cast<std::string>(field_val);
+                    } else if (field_val.getType() == XmlRpc::XmlRpcValue::TypeInt) {
+                        task_info[field] = static_cast<int>(field_val);
+                    } else if (field_val.getType() == XmlRpc::XmlRpcValue::TypeBoolean) {
+                        task_info[field] = static_cast<bool>(field_val);
+                    } else if (field_val.getType() == XmlRpc::XmlRpcValue::TypeDouble) {
+                        task_info[field] = static_cast<double>(field_val);
+                    }
+                }
+            }
+
+            if (task_info.contains("remote_uri") && task_info["remote_uri"].is_string()) {
+                task_info["resolved_remote_uri"] = resolve_topic(remove_slash(task_info["remote_uri"].get<std::string>()));
+            }
+
+            if (!task->published_ros_topics.empty()) {
+                nlohmann::json pub_stats = nlohmann::json::object();
+                for (const auto &top : task->published_ros_topics) {
+                    auto it = ros_pub_.find(top);
+                    if (it != ros_pub_.end()) {
+                        pub_stats[top] = {
+                            {"subscribers_count", it->second.getNumSubscribers()}
+                        };
+                    }
+                }
+                task_info["published_topics"] = pub_stats;
+            }
+
+            if (!task->subscribed_ros_topics.empty()) {
+                nlohmann::json sub_stats = nlohmann::json::object();
+                for (const auto &top : task->subscribed_ros_topics) {
+                    auto it = ros_sub_.find(top);
+                    if (it != ros_sub_.end()) {
+                        sub_stats[top] = {
+                            {"publishers_count", it->second.getNumPublishers()}
+                        };
+                    }
+                }
+                task_info["subscribed_topics"] = sub_stats;
+            }
+
+            routes_obj[key] = task_info;
+        }
+
+        status_json["routes"] = routes_obj;
+
+        std_msgs::String msg;
+        msg.data = status_json.dump();
+        routes_status_pub_.publish(msg);
+    } catch (const std::exception &e) {
+        ROS_WARN_STREAM_THROTTLE(5.0, "[ApiRoutes] Exception in publish_routes_status: " << e.what());
+    } catch (...) {}
+}
+
 void ApiRoutesEngine::register_mqtt_sub(std::shared_ptr<ApiRouteTask> task,
                                         std::string ros_topic,
                                         std::string mqtt_topic, int qos) {

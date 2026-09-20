@@ -62,6 +62,8 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
     std::vector<std::shared_ptr<ImageUploader>> image_uploaders_;
     ros::Publisher cmd_vel_pub_;
     ros::Publisher action_pub_;
+    ros::Publisher routes_status_pub_;
+    std::atomic<bool> mqtt_connected_{false};
 
     std::map<std::string, std::function<void()>> reconnect_callbacks_;
     std::map<std::string, std::function<void()>> state_heartbeat_callbacks_;
@@ -96,6 +98,7 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
     void setup_ws_state();
     void publish_in_memory_state();
     void setup_all_topic();
+    void publish_routes_status();
 
     void create_task(const std::string &key, XmlRpc::XmlRpcValue &val);
     void destroy_task(const std::string &key);
