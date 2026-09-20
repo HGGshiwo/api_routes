@@ -100,6 +100,18 @@ void ApiRoutesEngine::on_event(const dk::MqttConnectEvent &event,
   }
 }
 
+void ApiRoutesEngine::on_event(const dk::MqttDisconnectEvent &event,
+                               AppContext &ctx) {
+  try {
+    ROS_WARN_STREAM("[ApiRoutes] MQTT disconnected / connection lost: " << event.cause);
+  } catch (const std::exception &e) {
+    ROS_WARN_STREAM(
+        "[ApiRoutes] Exception in MqttDisconnectEvent handler: " << e.what());
+  } catch (...) {
+    ROS_WARN("[ApiRoutes] Unknown exception in MqttDisconnectEvent handler");
+  }
+}
+
 void ApiRoutesEngine::on_event(const dk::WsOpenEvent &event, AppContext &ctx) {
   try {
     ROS_INFO_STREAM("[ApiRoutes] WebSocket connection on path: " << event.path);
@@ -142,7 +154,7 @@ void ApiRoutesEngine::on_tick(double dt, AppContext &ctx) {
         oss << " | pos=[" << std::fixed << std::setprecision(3) << diag.pos_x
             << ", " << diag.pos_y << ", " << diag.pos_z << "]"
             << " | dev=" << device_code_.value_or("UNSET");
-        ROS_INFO_STREAM(oss.str());
+        ROS_INFO_STREAM_THROTTLE(10.0, oss.str());
       }
     }
 
@@ -315,14 +327,14 @@ void ApiRoutesEngine::publish_in_memory_state() {
         state_diff_tracker_->update_and_get_diff(current_json);
 
     if (diff_json.empty()) {
-      ROS_INFO_THROTTLE(2.0, "[Telemetry Diff] Suppressed: all telemetry "
-                             "values delta < 0.01 (robot stationary).");
+      ROS_INFO_THROTTLE(10.0, "[Telemetry Diff] Suppressed: all telemetry "
+                              "values delta < 0.01 (robot stationary).");
       return;
     }
 
     if (!diff_json.contains("mapLocation")) {
-      ROS_INFO_THROTTLE(2.0, "[Telemetry Diff] Telemetry diff generated "
-                             "without mapLocation (pos delta < 0.01m).");
+      ROS_INFO_THROTTLE(10.0, "[Telemetry Diff] Telemetry diff generated "
+                              "without mapLocation (pos delta < 0.01m).");
     }
 
     diff_json["deviceCode"] = device_code_.value_or("");
@@ -331,9 +343,12 @@ void ApiRoutesEngine::publish_in_memory_state() {
 
     std::string mqtt_topic = resolve_topic("device/$/state");
     if (mqtt_adapter_) {
-      ROS_INFO_THROTTLE(1.0, "[Telemetry Pub] Publishing to MQTT '%s': %s",
-                        mqtt_topic.c_str(), diff_json.dump().c_str());
-      mqtt_adapter_->publish(mqtt_topic, diff_json.dump(), 0, false);
+      std::string dump_str = diff_json.dump();
+      std::string preview = dump_str.substr(0, 100);
+      ROS_INFO_THROTTLE(5.0, "[Telemetry Pub] Publishing to MQTT '%s': %s%s",
+                        mqtt_topic.c_str(), preview.c_str(),
+                        dump_str.size() > 100 ? "..." : "");
+      mqtt_adapter_->publish(mqtt_topic, dump_str, 0, false);
     }
     if (web_adapter_) {
       web_adapter_->publish_state_to_path("/ws", "/ws",
@@ -401,7 +416,13 @@ bool ApiRoutesEngine::parse_ros_msg(const std::string &ros_topic,
                                     nlohmann::json &current_json) {
   try {
     current_json = nlohmann::json::parse(msg_data);
+  } catch (const std::exception &e) {
+    ROS_WARN_STREAM_THROTTLE(5.0, "[ApiRoutes] parse_ros_msg JSON parse failed on topic '"
+                                  << ros_topic << "': " << e.what());
+    return false;
   } catch (...) {
+    ROS_WARN_STREAM_THROTTLE(5.0, "[ApiRoutes] parse_ros_msg unknown parse exception on topic '"
+                                  << ros_topic << "'");
     return false;
   }
   return current_json.is_object();
@@ -431,16 +452,23 @@ void ApiRoutesEngine::load_param() {
     YAML::Node config = YAML::LoadFile(target_file_.string());
     if (config["device_code"] && config["device_code"].IsDefined() &&
         !config["device_code"].IsNull()) {
-      device_code_ = config["device_code"].as<std::string>();
+      std::string code = config["device_code"].as<std::string>();
+      if (!device_code_.has_value() || device_code_.value() != code) {
+        ROS_INFO_STREAM("[ApiRoutes] Parameter 'device_code' loaded: " << code);
+      }
+      device_code_ = code;
       try {
         ros::param::set("/device_code", device_code_.value());
       } catch (...) {
       }
     } else {
+      if (device_code_.has_value()) {
+        ROS_INFO_STREAM("[ApiRoutes] Parameter 'device_code' removed");
+      }
       device_code_ = std::nullopt;
     }
   } catch (const std::exception &e) {
-    ROS_WARN_STREAM("[ApiRoutes] load_param failed: " << e.what());
+    ROS_ERROR_STREAM("[ApiRoutes] Parameter parse error in " << target_file_ << ": " << e.what());
     device_code_ = std::nullopt;
   }
 }

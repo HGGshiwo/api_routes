@@ -1,28 +1,86 @@
 #include <api_routes/StringSrv.h>
 #include "api_routes/api_routes_engine.hpp"
+#include <xmlrpcpp/XmlRpcException.h>
+#include <sstream>
+
+static std::string xmlrpc_to_string(const XmlRpc::XmlRpcValue &val) {
+    std::ostringstream oss;
+    switch (val.getType()) {
+        case XmlRpc::XmlRpcValue::TypeBoolean:
+            oss << (static_cast<const bool &>(val) ? "true" : "false");
+            break;
+        case XmlRpc::XmlRpcValue::TypeInt:
+            oss << static_cast<const int &>(val);
+            break;
+        case XmlRpc::XmlRpcValue::TypeDouble:
+            oss << static_cast<const double &>(val);
+            break;
+        case XmlRpc::XmlRpcValue::TypeString:
+            oss << "\"" << static_cast<const std::string &>(val) << "\"";
+            break;
+        case XmlRpc::XmlRpcValue::TypeArray: {
+            oss << "[";
+            for (int i = 0; i < val.size(); ++i) {
+                if (i > 0) oss << ", ";
+                oss << xmlrpc_to_string(val[i]);
+            }
+            oss << "]";
+            break;
+        }
+        case XmlRpc::XmlRpcValue::TypeStruct: {
+            oss << "{";
+            bool first = true;
+            for (auto it = val.begin(); it != val.end(); ++it) {
+                if (!first) oss << ", ";
+                first = false;
+                oss << it->first << ": " << xmlrpc_to_string(it->second);
+            }
+            oss << "}";
+            break;
+        }
+        default:
+            oss << "<invalid/unknown>";
+            break;
+    }
+    return oss.str();
+}
 
 template <typename T>
 std::optional<T> ApiRoutesEngine::extract_param(const std::string &parent_key,
                                                  XmlRpc::XmlRpcValue &val,
                                                  const std::string &key,
                                                  bool verbose) {
+    if (val.getType() != XmlRpc::XmlRpcValue::TypeStruct) {
+        ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error for '" << parent_key
+                                        << "': config is not a struct/map (type="
+                                        << val.getType() << ")");
+        return std::nullopt;
+    }
     if (!val.hasMember(key)) {
         if (verbose)
-            ROS_ERROR_STREAM("[ApiRoutes] " << parent_key << " must include "
-                                            << key);
+            ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error for '" << parent_key
+                                            << "': missing required field '"
+                                            << key << "'");
         return std::nullopt;
     }
 
     T ret;
     try {
         ret = (T)val[key];
+    } catch (const XmlRpc::XmlRpcException &ex) {
+        ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error for '" << parent_key
+                                        << "': field '" << key
+                                        << "' conversion failed: " << ex.getMessage());
+        return std::nullopt;
     } catch (const std::exception &ex) {
-        ROS_ERROR_STREAM("[ApiRoutes] " << parent_key << " convert " << key
-                                        << " failed: " << ex.what());
+        ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error for '" << parent_key
+                                        << "': field '" << key
+                                        << "' conversion failed: " << ex.what());
         return std::nullopt;
     } catch (...) {
-        ROS_ERROR_STREAM("[ApiRoutes] " << parent_key << " convert " << key
-                                        << " failed with unknown exception!");
+        ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error for '" << parent_key
+                                        << "': field '" << key
+                                        << "' conversion failed with unknown exception!");
         return std::nullopt;
     }
     return ret;
@@ -46,7 +104,8 @@ void ApiRoutesEngine::destroy_task(const std::string &key) {
             if (sub_it != ros_sub_.end()) {
                 sub_it->second.shutdown();
                 ros_sub_.erase(sub_it);
-                ROS_INFO_STREAM("[ApiRoutes] Shutdown subscriber: " << topic);
+                ROS_INFO_STREAM("[ApiRoutes] Shutdown subscriber: " << topic
+                                << " (task: " << key << ")");
             }
         }
 
@@ -55,7 +114,8 @@ void ApiRoutesEngine::destroy_task(const std::string &key) {
             if (pub_it != ros_pub_.end()) {
                 pub_it->second.shutdown();
                 ros_pub_.erase(pub_it);
-                ROS_INFO_STREAM("[ApiRoutes] Shutdown publisher: " << topic);
+                ROS_INFO_STREAM("[ApiRoutes] Shutdown publisher: " << topic
+                                << " (task: " << key << ")");
             }
         }
 
@@ -66,7 +126,7 @@ void ApiRoutesEngine::destroy_task(const std::string &key) {
             if (img_it != image_uploaders_.end()) {
                 image_uploaders_.erase(img_it);
             }
-            ROS_INFO_STREAM("[ApiRoutes] Stopped image uploader for key: " << key);
+            ROS_INFO_STREAM("[ApiRoutes] Stopped image uploader (task: " << key << ")");
         }
 
         active_tasks_.erase(it);
@@ -89,62 +149,121 @@ void ApiRoutesEngine::destroy_task(const std::string &key) {
 }
 
 void ApiRoutesEngine::create_task(const std::string &key, XmlRpc::XmlRpcValue &val) {
-    auto task = std::make_shared<ApiRouteTask>();
-    task->key = key;
-    task->config = val;
+    if (val.getType() != XmlRpc::XmlRpcValue::TypeStruct) {
+        ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error for '" << key
+                                  << "': expected struct/map, got type " << val.getType());
+        return;
+    }
 
-    auto protocal = extract_param<std::string>(key, val, "protocol");
+    auto protocal = extract_param<std::string>(key, val, "protocol", true);
     if (!protocal.has_value()) return;
+    if (protocal.value().empty()) {
+        ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error for '" << key
+                                  << "': 'protocol' cannot be empty");
+        return;
+    }
 
+    std::string proto = protocal.value();
     std::optional<std::string> topic_type;
-    if (protocal.value() != "http" && protocal.value() != "upload_image") {
+    if (proto != "http" && proto != "upload_image") {
         auto type_opt =
-            extract_param<std::string>(key, val, "topic_type");
+            extract_param<std::string>(key, val, "topic_type", true);
         if (!type_opt.has_value()) return;
+        if (type_opt.value().empty()) {
+            ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error for '" << key
+                                      << "': 'topic_type' cannot be empty for protocol '" << proto << "'");
+            return;
+        }
         topic_type = type_opt;
-    } else if (protocal.value() == "upload_image") {
+    } else if (proto == "upload_image") {
         topic_type =
             extract_param<std::string>(key, val, "topic_type", false);
     }
 
-    auto ros_topic = extract_param<std::string>(key, val, "ros_topic");
-    if (!ros_topic.has_value() || ros_topic.value().empty()) return;
+    auto ros_topic = extract_param<std::string>(key, val, "ros_topic", true);
+    if (!ros_topic.has_value()) return;
+    if (ros_topic.value().empty()) {
+        ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error for '" << key
+                                  << "': 'ros_topic' cannot be empty");
+        return;
+    }
 
     auto remote_uri =
-        extract_param<std::string>(key, val, "remote_uri");
-    if (!remote_uri.has_value() || remote_uri.value().empty()) return;
+        extract_param<std::string>(key, val, "remote_uri", true);
+    if (!remote_uri.has_value()) return;
+    if (remote_uri.value().empty()) {
+        ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error for '" << key
+                                  << "': 'remote_uri' cannot be empty");
+        return;
+    }
 
-    if (protocal.value() == "mqtt") {
+    auto task = std::make_shared<ApiRouteTask>();
+    task->key = key;
+    task->config = val;
+
+    if (proto == "mqtt") {
         auto qos = extract_param<int>(key, val, "qos", false);
         auto retain = extract_param<bool>(key, val, "retain", false);
         auto mqtt_topic = remove_slash(remote_uri.value());
+        int qos_val = qos.value_or(0);
+        bool retain_val = retain.value_or(false);
 
         if (topic_type.value() == "pub") {
+            ROS_INFO_STREAM("[ApiRoutes] Creating route [" << key << "]: ROS subscriber on '"
+                            << ros_topic.value() << "' -> forward to MQTT topic '"
+                            << resolve_topic(mqtt_topic) << "' (qos=" << qos_val
+                            << ", retain=" << (retain_val ? "true" : "false") << ")");
             register_mqtt_pub(task, ros_topic.value(), mqtt_topic,
-                              qos.value_or(0), retain.value_or(false),
+                              qos_val, retain_val,
                               false);
         } else if (topic_type.value() == "pub_state") {
+            ROS_INFO_STREAM("[ApiRoutes] Creating route [" << key << "]: ROS state subscriber on '"
+                            << ros_topic.value() << "' -> forward to MQTT topic '"
+                            << resolve_topic(mqtt_topic) << "' (qos=" << qos_val
+                            << ", retain=" << (retain_val ? "true" : "false") << ")");
             register_mqtt_pub(task, ros_topic.value(), mqtt_topic,
-                              qos.value_or(0), retain.value_or(false),
+                              qos_val, retain_val,
                               true);
         } else if (topic_type.value() == "sub") {
+            ROS_INFO_STREAM("[ApiRoutes] Creating route [" << key << "]: MQTT subscription on '"
+                            << resolve_topic(mqtt_topic) << "' (qos=" << qos_val
+                            << ") -> forward to ROS publisher on '" << ros_topic.value() << "'");
             register_mqtt_sub(task, ros_topic.value(), mqtt_topic,
-                              qos.value_or(0));
+                              qos_val);
+        } else {
+            ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error for '" << key
+                                      << "': invalid topic_type '" << topic_type.value()
+                                      << "' for protocol 'mqtt' (expected 'pub', 'pub_state', or 'sub')");
+            return;
         }
-    } else if (protocal.value() == "websocket" ||
-               protocal.value() == "ws") {
+    } else if (proto == "websocket" || proto == "ws") {
         auto ws_path = remove_slash(remote_uri.value());
         if (topic_type.value() == "pub") {
+            ROS_INFO_STREAM("[ApiRoutes] Creating route [" << key << "]: ROS subscriber on '"
+                            << ros_topic.value() << "' -> forward to WebSocket route '/" << ws_path << "'");
             register_ws_pub(task, ros_topic.value(), ws_path, false);
         } else if (topic_type.value() == "pub_state") {
+            ROS_INFO_STREAM("[ApiRoutes] Creating route [" << key << "]: ROS state subscriber on '"
+                            << ros_topic.value() << "' -> forward to WebSocket route '/" << ws_path << "'");
             register_ws_pub(task, ros_topic.value(), ws_path, true);
         } else if (topic_type.value() == "sub") {
+            ROS_INFO_STREAM("[ApiRoutes] Creating route [" << key << "]: WebSocket subscription on route '/"
+                            << ws_path << "' -> forward to ROS publisher on '" << ros_topic.value() << "'");
             register_ws_sub(task, ros_topic.value(), ws_path);
+        } else {
+            ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error for '" << key
+                                      << "': invalid topic_type '" << topic_type.value()
+                                      << "' for protocol '" << proto
+                                      << "' (expected 'pub', 'pub_state', or 'sub')");
+            return;
         }
-    } else if (protocal.value() == "http") {
+    } else if (proto == "http") {
+        ROS_INFO_STREAM("[ApiRoutes] Creating route [" << key << "]: HTTP service bridge POST '/"
+                        << remove_slash(remote_uri.value()) << "' -> ROS service '"
+                        << ros_topic.value() << "'");
         register_http_service_bridge(task, ros_topic.value(),
                                      remote_uri.value());
-    } else if (protocal.value() == "upload_image") {
+    } else if (proto == "upload_image") {
         auto form_field_name = extract_param<std::string>(
             key, val, "form_field_name", false);
         auto interval_ms =
@@ -178,11 +297,18 @@ void ApiRoutesEngine::create_task(const std::string &key, XmlRpc::XmlRpcValue &v
                 device_code_.value();
         }
 
+        ROS_INFO_STREAM("[ApiRoutes] Creating route [" << key << "]: Image uploader on ROS topic '"
+                        << uploader_cfg.ros_topic << "' -> URL '" << uploader_cfg.target_url
+                        << "' (interval=" << uploader_cfg.interval_ms << "ms, type=" << tt << ")");
         auto uploader =
             std::make_shared<ImageUploader>(nh_, uploader_cfg);
         uploader->start();
         image_uploaders_.push_back(uploader);
         task->image_uploader = uploader;
+    } else {
+        ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error for '" << key
+                                  << "': unsupported protocol '" << proto << "'");
+        return;
     }
 
     {
@@ -199,38 +325,45 @@ void ApiRoutesEngine::setup_all_topic() {
         std::string api_param_ns = ROSNODE_NAME + "/api";
         XmlRpc::XmlRpcValue namespace_params;
         if (!ros::param::get(api_param_ns, namespace_params)) {
-            std::vector<std::string> keys_to_destroy;
+            std::vector<std::pair<std::string, std::string>> keys_to_destroy;
             {
                 std::lock_guard<std::mutex> lock(routes_mutex_);
                 for (const auto &p : active_tasks_) {
-                    keys_to_destroy.push_back(p.first);
+                    keys_to_destroy.emplace_back(p.first, xmlrpc_to_string(p.second->config));
                 }
             }
+            if (!keys_to_destroy.empty()) {
+                ROS_INFO_STREAM("[ApiRoutes] Parameter namespace '" << api_param_ns
+                                << "' not found or cleared. Removing all "
+                                << keys_to_destroy.size() << " active tasks.");
+            }
             for (const auto &k : keys_to_destroy) {
-                destroy_task(k);
+                ROS_INFO_STREAM("[ApiRoutes] Parameter key removed: " << k.first << " (" << k.second << ")");
+                destroy_task(k.first);
             }
             return;
         }
 
         if (namespace_params.getType() != XmlRpc::XmlRpcValue::TypeStruct) {
-            ROS_ERROR_STREAM("[ApiRoutes] param in " << api_param_ns
-                                                     << " is not struct!");
+            ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error: '" << api_param_ns
+                                      << "' must be a struct/map, got type "
+                                      << namespace_params.getType());
             return;
         }
 
         // 1. Detect removed keys
-        std::vector<std::string> keys_to_destroy;
+        std::vector<std::pair<std::string, std::string>> keys_to_destroy;
         {
             std::lock_guard<std::mutex> lock(routes_mutex_);
             for (const auto &p : active_tasks_) {
                 if (!namespace_params.hasMember(p.first)) {
-                    keys_to_destroy.push_back(p.first);
+                    keys_to_destroy.emplace_back(p.first, xmlrpc_to_string(p.second->config));
                 }
             }
         }
         for (const auto &k : keys_to_destroy) {
-            ROS_INFO_STREAM("[ApiRoutes] rosparam key removed: " << k);
-            destroy_task(k);
+            ROS_INFO_STREAM("[ApiRoutes] Parameter key removed: " << k.first << " (" << k.second << ")");
+            destroy_task(k.first);
         }
 
         // 2. Detect modified or added keys
@@ -238,6 +371,13 @@ void ApiRoutesEngine::setup_all_topic() {
              ++it) {
             std::string key = it->first;
             XmlRpc::XmlRpcValue &val = it->second;
+
+            if (val.getType() != XmlRpc::XmlRpcValue::TypeStruct) {
+                ROS_ERROR_STREAM_THROTTLE(5.0, "[ApiRoutes] Parameter parse error for '" << key
+                                          << "': expected struct/map, got type "
+                                          << val.getType());
+                continue;
+            }
 
             bool key_modified = false;
             {
@@ -247,8 +387,13 @@ void ApiRoutesEngine::setup_all_topic() {
                     if (is_param_equal(existing_it->second->config, val)) {
                         continue;
                     }
-                    ROS_INFO_STREAM("[ApiRoutes] rosparam key modified: " << key);
+                    ROS_INFO_STREAM("[ApiRoutes] Parameter key modified: " << key
+                                    << "\n  old: " << xmlrpc_to_string(existing_it->second->config)
+                                    << "\n  new: " << xmlrpc_to_string(val));
                     key_modified = true;
+                } else {
+                    ROS_INFO_STREAM("[ApiRoutes] Parameter key added: " << key
+                                    << " -> " << xmlrpc_to_string(val));
                 }
             }
 
@@ -268,21 +413,47 @@ void ApiRoutesEngine::setup_all_topic() {
 void ApiRoutesEngine::register_mqtt_sub(std::shared_ptr<ApiRouteTask> task,
                                         std::string ros_topic,
                                         std::string mqtt_topic, int qos) {
-    if (!device_code_.has_value()) return;
+    if (!device_code_.has_value()) {
+        ROS_WARN("[ApiRoutes] Cannot register MQTT subscription: device_code_ is UNSET");
+        return;
+    }
 
     ros::Publisher pub;
     {
         std::lock_guard<std::mutex> lock(routes_mutex_);
-        if (ros_pub_.find(ros_topic) != ros_pub_.end()) return;
+        if (ros_pub_.find(ros_topic) != ros_pub_.end()) {
+            ROS_WARN_STREAM("[ApiRoutes] ROS publisher for topic '" << ros_topic
+                            << "' already exists, skipping advertise");
+            return;
+        }
         pub = nh_.advertise<std_msgs::String>(ros_topic, 1000);
         ros_pub_[ros_topic] = pub;
         if (task) task->published_ros_topics.push_back(ros_topic);
+        ROS_INFO_STREAM("[ApiRoutes] Added ROS publisher: " << ros_topic);
     }
 
     mqtt_topic = resolve_topic(mqtt_topic);
+    ROS_INFO_STREAM("[ApiRoutes] Added MQTT subscription: topic '" << mqtt_topic
+                    << "' (qos=" << qos << ") -> forward to ROS topic '" << ros_topic << "'");
+
+    std::weak_ptr<ApiRouteTask> weak_task = task;
+    bool has_task = (task != nullptr);
+    auto last_log_time = std::make_shared<ros::Time>(0);
+
     mqtt_adapter_->register_raw_handler(
         mqtt_topic,
-        [pub](const dk::MqttMessage &msg) {
+        [pub, mqtt_topic, weak_task, has_task, last_log_time](const dk::MqttMessage &msg) {
+            if (has_task && weak_task.expired()) {
+                return;
+            }
+            ros::Time now = ros::Time::now();
+            if ((now - *last_log_time).toSec() >= 1.0) {
+                *last_log_time = now;
+                std::string preview = msg.payload.substr(0, 100);
+                ROS_INFO_STREAM("[ApiRoutes] MQTT received on topic '" << mqtt_topic
+                                << "' (size=" << msg.payload.size() << "): "
+                                << preview << (msg.payload.size() > 100 ? "..." : ""));
+            }
             std_msgs::String ros_msg;
             ros_msg.data = msg.payload;
             pub.publish(ros_msg);
@@ -371,6 +542,8 @@ void ApiRoutesEngine::register_mqtt_pub(std::shared_ptr<ApiRouteTask> task,
         std::lock_guard<std::mutex> lock(routes_mutex_);
         ros_sub_[ros_topic] = sub;
         if (task) task->subscribed_ros_topics.push_back(ros_topic);
+        ROS_INFO_STREAM("[ApiRoutes] Added ROS subscriber: " << ros_topic
+                        << " -> forward to MQTT topic: " << resolve_topic(mqtt_topic));
     }
 }
 
@@ -460,9 +633,18 @@ void ApiRoutesEngine::register_ws_sub(std::shared_ptr<ApiRouteTask> task,
     }
 
     std::string route_path = "/" + remove_slash(ws_path);
+    auto last_log_time = std::make_shared<ros::Time>(0);
     web_adapter_->register_managed_ws_route(
         route_path,
-        [pub](std::shared_ptr<dk::WsConnection> conn, std::string msg) {
+        [pub, route_path, last_log_time](std::shared_ptr<dk::WsConnection> conn, std::string msg) {
+            ros::Time now = ros::Time::now();
+            if ((now - *last_log_time).toSec() >= 1.0) {
+                *last_log_time = now;
+                std::string preview = msg.substr(0, 100);
+                ROS_INFO_STREAM("[ApiRoutes] WebSocket received on '" << route_path
+                                << "' (size=" << msg.size() << "): "
+                                << preview << (msg.size() > 100 ? "..." : ""));
+            }
             std_msgs::String ros_msg;
             ros_msg.data = std::move(msg);
             pub.publish(ros_msg);
@@ -542,6 +724,8 @@ void ApiRoutesEngine::register_ws_pub(std::shared_ptr<ApiRouteTask> task,
         std::lock_guard<std::mutex> lock(routes_mutex_);
         ros_sub_[ros_topic] = sub;
         if (task) task->subscribed_ros_topics.push_back(ros_topic);
+        ROS_INFO_STREAM("[ApiRoutes] Added ROS subscriber: " << ros_topic
+                        << " -> forward to WebSocket route: " << route_path);
     }
     ROS_INFO_STREAM("[Websocket] ros[state=" << is_state << "] -> ws: "
                                              << ros_topic << " -> "

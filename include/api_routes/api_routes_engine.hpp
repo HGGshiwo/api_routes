@@ -46,7 +46,7 @@ enum ActionType {STAND_UP, LIE_DOWN};
 
 class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
    public:
-    using AllowedEvents = std::tuple<dk::MqttConnectEvent, dk::WsOpenEvent>;
+    using AllowedEvents = std::tuple<dk::MqttConnectEvent, dk::MqttDisconnectEvent, dk::WsOpenEvent>;
     using MqttAdapter = dk::MqttClientAdapter<AppContext, ApiRoutesEngine>;
     using WebAdapter = dk::WebAdapter<AppContext, ApiRoutesEngine>;
     using BaseEngine::BaseEngine;
@@ -82,6 +82,7 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
     void on_start() override;
     void on_tick(double dt, AppContext &ctx) override;
     void on_event(const dk::MqttConnectEvent &event, AppContext &ctx);
+    void on_event(const dk::MqttDisconnectEvent &event, AppContext &ctx);
     void on_event(const dk::WsOpenEvent &event, AppContext &ctx);
 
    private:
