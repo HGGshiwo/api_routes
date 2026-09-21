@@ -81,18 +81,19 @@
 
 ## 动态全量 MQTT 消息通道（免注册）
 
-无需预先在 `rosparam` 注册任务，通过一对固定的 ROS 话题即可实现带目标 URL 的动态发送与带来源 URL 的全量接收：
+无需预先在 `rosparam` 注册任务，通过一对固定的 ROS 话题即可实现带目标 URL 的动态发送与带来源 URL 的全量接收，且原生支持 JSON 结构：
 
 ### 1. 发布到 MQTT (ROS -> MQTT)
 向话题 `/api_routes/mqtt/send`（消息类型：`std_msgs/String`，JSON 字符串）发布：
 ```json
 {
   "url": "device/$/cmd",        // 目标 MQTT Topic（$ 自动替换为当前 deviceCode）
-  "data": "{\"speed\": 1.5}",   // 发送内容（原始字符串）
+  "data": { "speed": 1.5 },      // 发送内容：可直接传 JSON 对象/数组，也可传字符串文本
   "qos": 0,                     // 可选，默认 0
   "retain": false               // 可选，默认 false
 }
 ```
+*注：若 `data` 为 JSON 对象/数组，系统会自动序列化为 JSON 字符串发送至 MQTT Broker；若为字符串则直接原样发送。*
 
 ### 2. 从 MQTT 接收并转发至 ROS (MQTT -> ROS)
 在 launch 文件或参数中指定要订阅的 MQTT Topic（支持通配符与 `$` 替换）：
@@ -104,7 +105,7 @@
 ```json
 {
   "url": "device/DOG-R-001/cmd",  // 来源真实的 MQTT Topic
-  "data": "{\"speed\": 1.5}"       // 原始 MQTT Payload 字符串
+  "data": { "speed": 1.5 }        // 若 MQTT Payload 为合法 JSON 则自动解析为 JSON 结构，否则为纯字符串
 }
 ```
 

@@ -937,7 +937,11 @@ void ApiRoutesEngine::forward_dynamic_mqtt_message(const std::string &topic,
     try {
         nlohmann::json out;
         out["url"] = topic;
-        out["data"] = payload;
+        try {
+            out["data"] = nlohmann::json::parse(payload);
+        } catch (...) {
+            out["data"] = payload;
+        }
 
         std_msgs::String ros_msg;
         ros_msg.data = out.dump();
