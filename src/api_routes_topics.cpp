@@ -906,6 +906,57 @@ void ApiRoutesEngine::handle_dynamic_mqtt_send(const std_msgs::String::ConstPtr 
     } catch (...) {}
 }
 
+std::string ApiRoutesEngine::restore_topic_from_template(const std::string &real_topic,
+                                                         const std::string &raw_pattern) {
+    if (raw_pattern.empty()) return real_topic;
+    if (raw_pattern.find('$') == std::string::npos) {
+        return real_topic;
+    }
+
+    std::string clean_pattern = raw_pattern;
+    if (!clean_pattern.empty() && clean_pattern.front() == '/') clean_pattern.erase(0, 1);
+    std::string clean_real = real_topic;
+    if (!clean_real.empty() && clean_real.front() == '/') clean_real.erase(0, 1);
+
+    std::vector<std::string> pat_parts;
+    std::stringstream ss_pat(clean_pattern);
+    std::string item;
+    while (std::getline(ss_pat, item, '/')) {
+        pat_parts.push_back(item);
+    }
+
+    std::vector<std::string> topic_parts;
+    std::stringstream ss_top(clean_real);
+    while (std::getline(ss_top, item, '/')) {
+        topic_parts.push_back(item);
+    }
+
+    std::vector<std::string> result_parts;
+    for (size_t i = 0; i < topic_parts.size(); ++i) {
+        if (i < pat_parts.size()) {
+            if (pat_parts[i] == "#") {
+                for (size_t j = i; j < topic_parts.size(); ++j) {
+                    result_parts.push_back(topic_parts[j]);
+                }
+                break;
+            } else if (pat_parts[i] == "$") {
+                result_parts.push_back("$");
+            } else {
+                result_parts.push_back(topic_parts[i]);
+            }
+        } else {
+            result_parts.push_back(topic_parts[i]);
+        }
+    }
+
+    std::string res;
+    for (size_t i = 0; i < result_parts.size(); ++i) {
+        if (i > 0) res += "/";
+        res += result_parts[i];
+    }
+    return res;
+}
+
 void ApiRoutesEngine::subscribe_dynamic_mqtt_topic(const std::string &raw_topic, int qos) {
     std::string resolved_topic = resolve_topic(remove_slash(raw_topic));
     if (resolved_topic.empty()) return;
@@ -922,21 +973,22 @@ void ApiRoutesEngine::subscribe_dynamic_mqtt_topic(const std::string &raw_topic,
     if (!mqtt_adapter_) return;
 
     ROS_INFO_STREAM("[DynamicMQTT] Subscribing to MQTT topic: " << resolved_topic
-                    << " (qos=" << qos << ")");
+                    << " (qos=" << qos << ", pattern=" << raw_topic << ")");
     mqtt_adapter_->register_raw_handler(
         resolved_topic,
-        [this](const dk::MqttMessage &msg) {
-            forward_dynamic_mqtt_message(msg.topic, msg.payload, msg.qos);
+        [this, raw_topic](const dk::MqttMessage &msg) {
+            forward_dynamic_mqtt_message(msg.topic, raw_topic, msg.payload, msg.qos);
         },
         qos);
 }
 
 void ApiRoutesEngine::forward_dynamic_mqtt_message(const std::string &topic,
+                                                   const std::string &raw_pattern,
                                                    const std::string &payload,
                                                    int qos) {
     try {
         nlohmann::json out;
-        out["url"] = topic;
+        out["url"] = restore_topic_from_template(topic, raw_pattern);
         try {
             out["data"] = nlohmann::json::parse(payload);
         } catch (...) {

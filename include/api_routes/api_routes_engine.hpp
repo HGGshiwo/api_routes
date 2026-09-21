@@ -139,5 +139,8 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
     void setup_dynamic_mqtt_bridge();
     void handle_dynamic_mqtt_send(const std_msgs::String::ConstPtr &msg);
     void subscribe_dynamic_mqtt_topic(const std::string &raw_topic, int qos = 0);
-    void forward_dynamic_mqtt_message(const std::string &topic, const std::string &payload, int qos);
+    void forward_dynamic_mqtt_message(const std::string &topic, const std::string &raw_pattern,
+                                      const std::string &payload, int qos);
+    static std::string restore_topic_from_template(const std::string &real_topic,
+                                                   const std::string &raw_pattern);
 };
