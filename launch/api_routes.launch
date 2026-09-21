@@ -7,7 +7,7 @@
     <arg name="log_output" default="screen"/>
     <arg name="fcu_protocol" default="v2.0"/>
     <arg name="respawn_mavros" default="true"/>
-    
+
     <!-- Include the standard MAVROS launch file -->
     <include file="$(find mavros)/launch/apm.launch">
         <arg name="fcu_url" value="$(arg fcu_url)"/>
@@ -28,6 +28,7 @@
     <arg name="web_port" default="8000"/>
     <arg name="cloud_host" default="localhost"/>
     <arg name="cloud_port" default="8001"/>
+    <arg name="dynamic_mqtt_sub_topics" default="" />
 
     <!-- Launch the integrated api_routes node -->
     <node pkg="api_routes" type="api_routes_node" name="api_routes" respawn="true" respawn_delay="5">
@@ -39,5 +40,6 @@
         <param name="web_port" value="$(arg web_port)"/>
         <param name="cloud_host" value="$(arg cloud_host)"/>
         <param name="cloud_port" value="$(arg cloud_port)"/>
+        <param name="dynamic_mqtt_sub_topics" value="$(arg dynamic_mqtt_sub_topics)" />
     </node>
 </launch>

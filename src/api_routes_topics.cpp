@@ -811,3 +811,138 @@ void ApiRoutesEngine::register_ws_pub(std::shared_ptr<ApiRouteTask> task,
                                              << ros_topic << " -> "
                                              << route_path);
 }
+
+void ApiRoutesEngine::setup_dynamic_mqtt_bridge() {
+    try {
+        dynamic_mqtt_pub_topic_ =
+            private_nh_.param("dynamic_mqtt_pub_topic", std::string("/api_routes/mqtt/send"));
+        dynamic_mqtt_sub_topic_ =
+            private_nh_.param("dynamic_mqtt_sub_topic", std::string("/api_routes/mqtt/recv"));
+
+        dynamic_mqtt_sub_pub_ =
+            nh_.advertise<std_msgs::String>(dynamic_mqtt_sub_topic_, 1000);
+        dynamic_mqtt_pub_sub_ = nh_.subscribe<std_msgs::String>(
+            dynamic_mqtt_pub_topic_, 1000, &ApiRoutesEngine::handle_dynamic_mqtt_send, this);
+
+        ROS_INFO_STREAM("[DynamicMQTT] Bridge initialized: Subscribing to ROS '"
+                        << dynamic_mqtt_pub_topic_
+                        << "' -> forward to MQTT; Publishing MQTT -> ROS '"
+                        << dynamic_mqtt_sub_topic_ << "'");
+
+        if (private_nh_.hasParam("dynamic_mqtt_sub_topics")) {
+            XmlRpc::XmlRpcValue sub_topics_val;
+            private_nh_.getParam("dynamic_mqtt_sub_topics", sub_topics_val);
+            if (sub_topics_val.getType() == XmlRpc::XmlRpcValue::TypeArray) {
+                for (int i = 0; i < sub_topics_val.size(); ++i) {
+                    if (sub_topics_val[i].getType() == XmlRpc::XmlRpcValue::TypeString) {
+                        configured_dynamic_sub_topics_.push_back(
+                            static_cast<std::string>(sub_topics_val[i]));
+                    }
+                }
+            } else if (sub_topics_val.getType() == XmlRpc::XmlRpcValue::TypeString) {
+                std::string list_str = static_cast<std::string>(sub_topics_val);
+                std::stringstream ss(list_str);
+                std::string item;
+                while (std::getline(ss, item, ',')) {
+                    item.erase(0, item.find_first_not_of(" \t\n\r"));
+                    item.erase(item.find_last_not_of(" \t\n\r") + 1);
+                    if (!item.empty()) {
+                        configured_dynamic_sub_topics_.push_back(item);
+                    }
+                }
+            }
+        }
+
+        for (const auto &raw_top : configured_dynamic_sub_topics_) {
+            if (raw_top.find('$') != std::string::npos && !device_code_.has_value()) {
+                continue;
+            }
+            subscribe_dynamic_mqtt_topic(raw_top, 0);
+        }
+    } catch (const std::exception &e) {
+        ROS_ERROR_STREAM("[DynamicMQTT] Exception in setup_dynamic_mqtt_bridge: " << e.what());
+    } catch (...) {
+        ROS_ERROR("[DynamicMQTT] Unknown exception in setup_dynamic_mqtt_bridge!");
+    }
+}
+
+void ApiRoutesEngine::handle_dynamic_mqtt_send(const std_msgs::String::ConstPtr &msg) {
+    try {
+        if (!msg || !mqtt_adapter_) return;
+
+        nlohmann::json j;
+        try {
+            j = nlohmann::json::parse(msg->data);
+        } catch (const std::exception &e) {
+            ROS_WARN_STREAM_THROTTLE(5.0, "[DynamicMQTT] Failed to parse JSON on "
+                                          << dynamic_mqtt_pub_topic_ << ": " << e.what());
+            return;
+        }
+
+        if (!j.is_object() || !j.contains("url")) {
+            ROS_WARN_STREAM_THROTTLE(5.0, "[DynamicMQTT] Message on "
+                                          << dynamic_mqtt_pub_topic_ << " must be a JSON object containing 'url'");
+            return;
+        }
+
+        std::string raw_url = j["url"].get<std::string>();
+        std::string target_topic = resolve_topic(remove_slash(raw_url));
+
+        std::string data_str;
+        if (j.contains("data")) {
+            if (j["data"].is_string()) {
+                data_str = j["data"].get<std::string>();
+            } else {
+                data_str = j["data"].dump();
+            }
+        }
+
+        int qos = j.value("qos", 0);
+        bool retain = j.value("retain", false);
+
+        mqtt_adapter_->publish(target_topic, data_str, qos, retain);
+    } catch (const std::exception &e) {
+        ROS_WARN_STREAM("[DynamicMQTT] Exception in handle_dynamic_mqtt_send: " << e.what());
+    } catch (...) {}
+}
+
+void ApiRoutesEngine::subscribe_dynamic_mqtt_topic(const std::string &raw_topic, int qos) {
+    std::string resolved_topic = resolve_topic(remove_slash(raw_topic));
+    if (resolved_topic.empty()) return;
+
+    {
+        std::lock_guard<std::mutex> lock(dynamic_mqtt_mutex_);
+        if (dynamic_subscribed_mqtt_topics_.find(resolved_topic) !=
+            dynamic_subscribed_mqtt_topics_.end()) {
+            return;
+        }
+        dynamic_subscribed_mqtt_topics_.insert(resolved_topic);
+    }
+
+    if (!mqtt_adapter_) return;
+
+    ROS_INFO_STREAM("[DynamicMQTT] Subscribing to MQTT topic: " << resolved_topic
+                    << " (qos=" << qos << ")");
+    mqtt_adapter_->register_raw_handler(
+        resolved_topic,
+        [this](const dk::MqttMessage &msg) {
+            forward_dynamic_mqtt_message(msg.topic, msg.payload, msg.qos);
+        },
+        qos);
+}
+
+void ApiRoutesEngine::forward_dynamic_mqtt_message(const std::string &topic,
+                                                   const std::string &payload,
+                                                   int qos) {
+    try {
+        nlohmann::json out;
+        out["url"] = topic;
+        out["data"] = payload;
+
+        std_msgs::String ros_msg;
+        ros_msg.data = out.dump();
+        dynamic_mqtt_sub_pub_.publish(ros_msg);
+    } catch (const std::exception &e) {
+        ROS_WARN_STREAM("[DynamicMQTT] Exception in forward_dynamic_mqtt_message: " << e.what());
+    } catch (...) {}
+}

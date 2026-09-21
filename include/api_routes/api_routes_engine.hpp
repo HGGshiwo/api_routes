@@ -126,4 +126,18 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
 
     std::string remove_slash(std::string str);
     std::string resolve_topic(const std::string &topic) const;
+
+    // 动态全量 MQTT 消息桥接
+    ros::Subscriber dynamic_mqtt_pub_sub_;
+    ros::Publisher dynamic_mqtt_sub_pub_;
+    std::string dynamic_mqtt_pub_topic_;
+    std::string dynamic_mqtt_sub_topic_;
+    std::set<std::string> dynamic_subscribed_mqtt_topics_;
+    std::vector<std::string> configured_dynamic_sub_topics_;
+    std::mutex dynamic_mqtt_mutex_;
+
+    void setup_dynamic_mqtt_bridge();
+    void handle_dynamic_mqtt_send(const std_msgs::String::ConstPtr &msg);
+    void subscribe_dynamic_mqtt_topic(const std::string &raw_topic, int qos = 0);
+    void forward_dynamic_mqtt_message(const std::string &topic, const std::string &payload, int qos);
 };

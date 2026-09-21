@@ -58,6 +58,7 @@ void ApiRoutesEngine::on_start() {
     setup_mqtt();
     setup_http_service();
     setup_ws_state();
+    setup_dynamic_mqtt_bridge();
   } catch (const std::exception &e) {
     ROS_ERROR_STREAM("[ApiRoutes] Exception in on_start: " << e.what());
   } catch (...) {
@@ -399,6 +400,10 @@ void ApiRoutesEngine::setup_mqtt() {
 
                 private_nh_.setParam("device_code", device_code_.value());
                 save_param("device_code", device_code_.value());
+
+                for (const auto &raw_top : configured_dynamic_sub_topics_) {
+                  subscribe_dynamic_mqtt_topic(raw_top, 0);
+                }
 
                 ROS_INFO_STREAM(
                     "[Mqtt] register with code: " << device_code_.value());

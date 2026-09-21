@@ -26,6 +26,11 @@
    - 支持通过 `config/device_code.yaml` 加载或通过 MQTT `$exclusive/register` 动态注册设备代码。
    - 支持通过 ROS Parameter 动态配置自定义 MQTT / WebSocket / HTTP Bridge / 图片上传路由。
 
+6. **全量动态 MQTT 消息通道（免注册）**
+   - 提供一对 ROS 话题用于通用的 MQTT 消息双向透传。
+   - **ROS -> MQTT**：发布消息时在 JSON 中携带目标 `url`，自动复用 `$` 替换为 `deviceCode`，无需预先在 `rosparam` 注册。
+   - **MQTT -> ROS**：订阅 MQTT 主题（支持通配符与 `$` 替换）并转发至 ROS 话题，消息体中直接携带来源真实 `url` 与原始 `data`。
+
 ---
 
 ## 动态路由配置 (rosparam 注册说明)
@@ -74,6 +79,37 @@
 
 ---
 
+## 动态全量 MQTT 消息通道（免注册）
+
+无需预先在 `rosparam` 注册任务，通过一对固定的 ROS 话题即可实现带目标 URL 的动态发送与带来源 URL 的全量接收：
+
+### 1. 发布到 MQTT (ROS -> MQTT)
+向话题 `/api_routes/mqtt/send`（消息类型：`std_msgs/String`，JSON 字符串）发布：
+```json
+{
+  "url": "device/$/cmd",        // 目标 MQTT Topic（$ 自动替换为当前 deviceCode）
+  "data": "{\"speed\": 1.5}",   // 发送内容（原始字符串）
+  "qos": 0,                     // 可选，默认 0
+  "retain": false               // 可选，默认 false
+}
+```
+
+### 2. 从 MQTT 接收并转发至 ROS (MQTT -> ROS)
+在 launch 文件或参数中指定要订阅的 MQTT Topic（支持通配符与 `$` 替换）：
+```xml
+<!-- 单个或多个主题（用逗号隔开） -->
+<param name="dynamic_mqtt_sub_topics" value="device/$/#,custom/topic"/>
+```
+订阅 ROS 话题 `/api_routes/mqtt/recv`（消息类型：`std_msgs/String`，JSON 字符串），即可收到带有真实来源 URL 的全量数据：
+```json
+{
+  "url": "device/DOG-R-001/cmd",  // 来源真实的 MQTT Topic
+  "data": "{\"speed\": 1.5}"       // 原始 MQTT Payload 字符串
+}
+```
+
+---
+
 ## 快速启动
 
 ```bash
@@ -92,3 +128,9 @@ roslaunch api_routes api_routes.launch
 | `cloud_host` / `cloud_port` | `localhost` / `8000` | 云端 HTTP 上报主机与端口 |
 | `abnormal_report_topic` | `/abnormal/report` | 异常报告 ROS 监听话题 |
 | `abnormal_report_uri` | `/abnormal/report` | 异常报告远程 HTTP 路径 |
+| `dynamic_mqtt_pub_topic` | `/api_routes/mqtt/send` | 全量动态 MQTT 发送话题（ROS -> MQTT） |
+| `dynamic_mqtt_sub_topic` | `/api_routes/mqtt/recv` | 全量动态 MQTT 接收话题（MQTT -> ROS） |
+| `dynamic_mqtt_sub_topics`| 无 | 订阅的 MQTT 主题列表（支持数组或逗号隔开，如 `device/$/#`） |
+
+
+

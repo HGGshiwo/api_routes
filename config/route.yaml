@@ -1,0 +1,13 @@
+api_routes:
+  api:
+    test_sub:
+      protocol: mqtt
+      topic_type: sub
+      ros_topic: /test/sub
+      remote_uri: device/$/test_sub_topic
+
+    test_pub:
+      protocol: mqtt
+      topic_type: pub
+      ros_topic: /test/pub
+      remote_uri: device/$/test_pub_topic
