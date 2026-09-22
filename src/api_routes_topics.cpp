@@ -110,6 +110,23 @@ void ApiRoutesEngine::destroy_task(const std::string &key) {
         }
 
         for (const auto &topic : task->published_ros_topics) {
+            // 该 publisher 可能被其他任务复用（多个 mqtt/ws 入口转发到同一
+            // ROS 主题），仍被引用时不关闭
+            bool still_used = false;
+            for (const auto &p : active_tasks_) {
+                if (p.first == key) continue;
+                if (std::find(p.second->published_ros_topics.begin(),
+                              p.second->published_ros_topics.end(),
+                              topic) != p.second->published_ros_topics.end()) {
+                    still_used = true;
+                    break;
+                }
+            }
+            if (still_used) {
+                ROS_INFO_STREAM("[ApiRoutes] Keep publisher: " << topic
+                                << " (still used by other tasks)");
+                continue;
+            }
             auto pub_it = ros_pub_.find(topic);
             if (pub_it != ros_pub_.end()) {
                 pub_it->second.shutdown();
@@ -501,15 +518,18 @@ void ApiRoutesEngine::register_mqtt_sub(std::shared_ptr<ApiRouteTask> task,
     ros::Publisher pub;
     {
         std::lock_guard<std::mutex> lock(routes_mutex_);
-        if (ros_pub_.find(ros_topic) != ros_pub_.end()) {
-            ROS_WARN_STREAM("[ApiRoutes] ROS publisher for topic '" << ros_topic
-                            << "' already exists, skipping advertise");
-            return;
+        auto existing = ros_pub_.find(ros_topic);
+        if (existing != ros_pub_.end()) {
+            // 不同 mqtt 主题允许转发到同一 ROS 主题，复用已有 publisher 继续注册
+            pub = existing->second;
+            ROS_INFO_STREAM("[ApiRoutes] Reusing existing ROS publisher for topic '"
+                            << ros_topic << "'");
+        } else {
+            pub = nh_.advertise<std_msgs::String>(ros_topic, 1000);
+            ros_pub_[ros_topic] = pub;
+            ROS_INFO_STREAM("[ApiRoutes] Added ROS publisher: " << ros_topic);
         }
-        pub = nh_.advertise<std_msgs::String>(ros_topic, 1000);
-        ros_pub_[ros_topic] = pub;
         if (task) task->published_ros_topics.push_back(ros_topic);
-        ROS_INFO_STREAM("[ApiRoutes] Added ROS publisher: " << ros_topic);
     }
 
     mqtt_topic = resolve_topic(mqtt_topic);
@@ -703,12 +723,16 @@ void ApiRoutesEngine::register_ws_sub(std::shared_ptr<ApiRouteTask> task,
     ros::Publisher pub;
     {
         std::lock_guard<std::mutex> lock(routes_mutex_);
-        if (ros_pub_.find(ros_topic) != ros_pub_.end()) {
-            ROS_ERROR_STREAM("[Websocket] rostopic " << ros_topic << " exists!");
-            return;
+        auto existing = ros_pub_.find(ros_topic);
+        if (existing != ros_pub_.end()) {
+            // 不同 ws 路径允许转发到同一 ROS 主题，复用已有 publisher 继续注册
+            pub = existing->second;
+            ROS_INFO_STREAM("[Websocket] Reusing existing ROS publisher for topic '"
+                            << ros_topic << "'");
+        } else {
+            pub = nh_.advertise<std_msgs::String>(ros_topic, 1000);
+            ros_pub_[ros_topic] = pub;
         }
-        pub = nh_.advertise<std_msgs::String>(ros_topic, 1000);
-        ros_pub_[ros_topic] = pub;
         if (task) task->published_ros_topics.push_back(ros_topic);
     }
 
