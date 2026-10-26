@@ -20,6 +20,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "api_routes/abnormal_reporter.hpp"
+#include "api_routes/bag_recorder.hpp"
 #include "api_routes/events.hpp"
 #include <dk_auto_json.hpp>
 #include "api_routes/image_uploader.hpp"
@@ -56,6 +57,7 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
     std::shared_ptr<MavlinkTelemetry> telemetry_;
     std::shared_ptr<StateDiffTracker> state_diff_tracker_;
     std::shared_ptr<AbnormalReporter> abnormal_reporter_;
+    std::shared_ptr<BagRecorder> bag_recorder_;
 
     std::map<std::string, ros::Publisher> ros_pub_;
     std::map<std::string, ros::Subscriber> ros_sub_;
@@ -94,6 +96,8 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
     nlohmann::json handle_get_gps();
     nlohmann::json handle_joystick(const OldJoystickEvent &event);
     nlohmann::json handle_action(ActionType action_type);
+    nlohmann::json handle_start_record(const StartRecordEvent &event);
+    nlohmann::json handle_stop_record();
 
     void setup_ws_state();
     void publish_in_memory_state();

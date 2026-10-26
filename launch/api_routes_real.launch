@@ -3,6 +3,7 @@
     <arg name="dynamic_mqtt_sub_topics" default="task/$/#"/>
     
     <rosparam command="load" file="$(find api_routes)/config/route.yaml"/>
+    <rosparam command="load" file="$(find api_routes)/config/bag.yaml"/>
 
     <include file="$(find api_routes)/launch/api_routes.launch">
         <arg name="dynamic_mqtt_sub_topics" value="$(arg dynamic_mqtt_sub_topics)"/>

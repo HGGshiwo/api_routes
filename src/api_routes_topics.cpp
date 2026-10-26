@@ -547,9 +547,14 @@ void ApiRoutesEngine::register_mqtt_sub(std::shared_ptr<ApiRouteTask> task,
                 return;
             }
             ros::Time now = ros::Time::now();
+            std::string preview = msg.payload.substr(0, 100);
+            ROS_INFO_STREAM("[MqttLog] topic='" << mqtt_topic << "' qos="
+                            << static_cast<int>(msg.qos) << " size="
+                            << msg.payload.size() << " payload='" << preview
+                            << (msg.payload.size() > 100 ? "...(truncated)" : "")
+                            << "'");
             if ((now - *last_log_time).toSec() >= 1.0) {
                 *last_log_time = now;
-                std::string preview = msg.payload.substr(0, 100);
                 ROS_INFO_STREAM("[ApiRoutes] MQTT received on topic '" << mqtt_topic
                                 << "' (size=" << msg.payload.size() << "): "
                                 << preview << (msg.payload.size() > 100 ? "..." : ""));
@@ -1001,6 +1006,12 @@ void ApiRoutesEngine::subscribe_dynamic_mqtt_topic(const std::string &raw_topic,
     mqtt_adapter_->register_raw_handler(
         resolved_topic,
         [this, raw_topic](const dk::MqttMessage &msg) {
+            ROS_INFO_STREAM("[MqttLog] topic='" << msg.topic << "' qos="
+                            << static_cast<int>(msg.qos) << " size="
+                            << msg.payload.size() << " payload='"
+                            << msg.payload.substr(0, 100)
+                            << (msg.payload.size() > 100 ? "...(truncated)" : "")
+                            << "'");
             forward_dynamic_mqtt_message(msg.topic, raw_topic, msg.payload, msg.qos);
         },
         qos);

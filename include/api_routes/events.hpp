@@ -18,3 +18,8 @@ struct OldJoystickEvent {
 struct SetSmootherEvent {
   bool enable = true;
 };
+
+// @JSON_ENABLE
+struct StartRecordEvent {
+  std::string bag_name;
+};

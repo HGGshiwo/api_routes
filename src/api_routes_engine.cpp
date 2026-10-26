@@ -270,6 +270,46 @@ void ApiRoutesEngine::setup_http_service() {
       });
 
   ROS_INFO("[ApiRoutes] HTTP /vel_smoother/enable endpoints registered.");
+
+  // 与 route.yaml 同一命名空间约定: bag.yaml 顶层键为 api_routes,
+  // 按全局 /api_routes/record_topics 读取, 不随节点/launch 的 ns 漂移
+  std::vector<std::string> record_topics;
+  if (!nh_.param<std::vector<std::string>>(ROSNODE_NAME + "/record_topics",
+                                           record_topics, {})) {
+    // 兼容旧写法: 顶层平铺的 record_topics
+    nh_.param<std::vector<std::string>>("record_topics", record_topics, {});
+  }
+  if (record_topics.empty()) {
+    ROS_WARN("[ApiRoutes] record_topics is empty, /start_record will fail "
+             "until config/bag.yaml is fixed.");
+  }
+  bag_recorder_ = std::make_shared<BagRecorder>(nh_);
+
+  web_adapter_->register_handler(
+      boost::beast::http::verb::post, "/start_record",
+      [this, record_topics](const StartRecordEvent &event) -> nlohmann::json {
+        std::string err = bag_recorder_->start(event.bag_name, "bags",
+                                               record_topics, "lz4", 0);
+        if (!err.empty()) {
+          return nlohmann::json{{"status", "error"}, {"msg", err}};
+        }
+        return nlohmann::json{{"status", "success"},
+                              {"msg", nlohmann::json::array({bag_recorder_->bag_path()})}};
+      });
+  ROS_INFO("[ApiRoutes] HTTP /start_record endpoint registered (%zu topics).",
+           record_topics.size());
+
+  web_adapter_->register_handler(
+      boost::beast::http::verb::post, "/stop_record",
+      [this]() -> nlohmann::json {
+        std::string err = bag_recorder_->stop();
+        if (!err.empty()) {
+          return nlohmann::json{{"status", "error"}, {"msg", err}};
+        }
+        return nlohmann::json{{"status", "success"},
+                              {"msg", nlohmann::json::array({"OK"})}};
+      });
+  ROS_INFO("[ApiRoutes] HTTP /stop_record endpoint registered.");
 }
 
 static const std::map<std::string, std::string> key_map{
@@ -387,6 +427,8 @@ void ApiRoutesEngine::setup_mqtt() {
       mqtt_adapter_->register_publish_handler<RegisterEvent>(
           "$exclusive/register", [this](const RegisterEvent &data) -> void {
             try {
+              ROS_INFO_STREAM("[MqttLog] topic='$exclusive/register' payload='"
+                              << data.deviceCode << "'");
               if (!device_code_.has_value()) {
                 device_code_ = data.deviceCode;
                 try {

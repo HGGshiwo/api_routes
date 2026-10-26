@@ -1,0 +1,30 @@
+api_routes:
+  record_topics:
+    - /task/feedback
+    - /task/queue
+    - /task/stream
+    - /tf
+    - /mqtt/task/cancel
+    - /mqtt/task/finish
+    - /mqtt/task/pause
+    - /mqtt/task/progress
+    - /mqtt/task/raw
+    - /mqtt/task/resume
+    - /mqtt/task/start
+    - /mqtt/task/taskcancel
+    - /mqtt/task/taskpause
+    - /mqtt/task/taskresume
+    - /cmd_vel
+    - /dank/action
+    - /dank/status
+    - /move_base/cancel
+    - /move_base/feedback
+    - /move_base/goal
+    - /move_base/result
+    - /move_base/status
+    - /move_base_simple/goal
+    - /pseudo_cloud_base
+    - /scan
+    - /map
+    - /loc_base
+    - /rosout
