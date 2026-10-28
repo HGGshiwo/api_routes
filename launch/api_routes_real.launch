@@ -1,5 +1,5 @@
 <launch>
-    <arg name="fcu_url" default="/dev/ttyS5:115200" />
+    <arg name="fcu_url" default="serial:///dev/ttyS5:115200" />
     <arg name="dynamic_mqtt_sub_topics" default="task/$/#"/>
     
     <rosparam command="load" file="$(find api_routes)/config/route.yaml"/>
