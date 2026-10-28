@@ -108,6 +108,7 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
 
     void setup_ws_state();
     void publish_in_memory_state();
+    void publish_full_state();
     void setup_all_topic();
     void publish_routes_status();
 

@@ -74,10 +74,7 @@ void ApiRoutesEngine::on_event(const dk::MqttConnectEvent &event,
       return;
     ROS_INFO("[ApiRoutes] MQTT connected, publishing full state telemetry...");
 
-    nlohmann::json last_state = state_diff_tracker_->get_last_state();
-    if (!last_state.empty()) {
-      publish_mqtt_msg(last_state, "device/$/state", 0, false);
-    }
+    publish_full_state();
     std::vector<std::function<void()>> cbs_to_call;
     {
       std::lock_guard<std::mutex> lock(callbacks_mutex_);
@@ -169,12 +166,7 @@ void ApiRoutesEngine::on_tick(double dt, AppContext &ctx) {
 
     if (is_hz(0.5) && device_code_.has_value()) {
       // 定时全量心跳保底：即使机器人静止未产生差量，也定期上报一次全量状态
-      if (state_diff_tracker_) {
-        nlohmann::json last_state = state_diff_tracker_->get_last_state();
-        if (!last_state.empty()) {
-          publish_mqtt_msg(last_state, "device/$/state", 0, false);
-        }
-      }
+      publish_full_state();
 
       std::vector<std::function<void()>> cbs_to_call;
       {
@@ -339,7 +331,9 @@ void ApiRoutesEngine::setup_ws_state() {
     std::lock_guard<std::mutex> lock(ws_open_callbacks_mutex_);
     ws_open_callbacks_[route_path] =
         [this, route_path](std::shared_ptr<dk::WsConnection> conn) {
-          nlohmann::json last_state = state_diff_tracker_->get_last_state();
+          if (!telemetry_)
+            return;
+          nlohmann::json last_state = telemetry_->getMergedState();
           if (!last_state.empty()) {
             last_state["deviceCode"] = device_code_.value_or("");
             last_state["timestamp"] =
@@ -355,6 +349,19 @@ void ApiRoutesEngine::setup_ws_state() {
       [](std::shared_ptr<dk::WsConnection> conn, std::string msg) {});
   ROS_INFO_STREAM("[ApiRoutes] Managed WebSocket route " << route_path
                                                          << " registered.");
+}
+
+void ApiRoutesEngine::publish_full_state() {
+  if (!device_code_.has_value() || !telemetry_ || !mqtt_adapter_)
+    return;
+  nlohmann::json state = telemetry_->getMergedState();
+  if (state.empty())
+    return;
+  state["deviceCode"] = device_code_.value_or("");
+  state["timestamp"] = (uint64_t)(get_time_provider()->now() * 1000);
+  state["type"] = "state";
+  mqtt_adapter_->publish(resolve_topic("device/$/state"), state.dump(), 0,
+                         false);
 }
 
 void ApiRoutesEngine::publish_in_memory_state() {
@@ -454,8 +461,12 @@ void ApiRoutesEngine::setup_control_topic() {
           auto data = nlohmann::json::parse(msg.payload, nullptr, false);
           if (data.is_object() && data.value("mode", "") == "emergency") {
             ROS_WARN("[ApiRoutes] Emergency control received, "
-                     "publishing lie-down to dank/action");
-            handle_action(ActionType::LIE_DOWN);
+                     "publishing damp to dank/action");
+            std_msgs::String action;
+            action.data = "damp";
+            if (action_pub_) {
+              action_pub_.publish(action);
+            }
           } else {
             ROS_INFO_STREAM("[ApiRoutes] Control message ignored (mode not "
                             "emergency): '"
