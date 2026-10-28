@@ -19,9 +19,6 @@
 MavlinkTelemetry::MavlinkTelemetry(ros::NodeHandle &nh, ros::NodeHandle &pnh) {
     pnh.param<double>("publish_rate", publish_rate_, 20.0);
     pnh.param<bool>("use_degrees", use_degrees_, false);
-    pnh.param<std::string>("odom_topic", odom_topic_,
-                           "/mavros/local_position/odom");
-    pnh.param<std::string>("loc_base_topic", loc_base_topic_, "loc_base");
 
     if (publish_rate_ <= 0.0) {
         ROS_WARN(
@@ -38,7 +35,7 @@ MavlinkTelemetry::MavlinkTelemetry(ros::NodeHandle &nh, ros::NodeHandle &pnh) {
 
     sub_state_ =
         nh.subscribe("/mavros/state", 10, &MavlinkTelemetry::stateCallback, this);
-    sub_local_odom_ = nh.subscribe(odom_topic_, 10,
+    sub_local_odom_ = nh.subscribe("/mavros/local_position/odom", 10,
                                    &MavlinkTelemetry::localOdomCallback, this);
     sub_loc_base_ = nh.subscribe(loc_base_topic_, 10,
                                  &MavlinkTelemetry::locBaseCallback, this);
@@ -109,12 +106,6 @@ double MavlinkTelemetry::extractYaw(
 
 void MavlinkTelemetry::locBaseCallback(
     const nav_msgs::Odometry::ConstPtr &msg) {
-    std::lock_guard<std::mutex> lock(data_mutex_);
-    yaw_ = extractYaw(msg);
-}
-
-void MavlinkTelemetry::localOdomCallback(
-    const nav_msgs::Odometry::ConstPtr &msg) {
     odom_msg_count_++;
     last_odom_stamp_ = msg->header.stamp;
 
@@ -125,9 +116,11 @@ void MavlinkTelemetry::localOdomCallback(
     pos_z_ = msg->pose.pose.position.z;
 
     ROS_INFO_THROTTLE(2.0,
-        "[OdomCallback] Received %s: seq=%u, stamp=%.3f, pos=[%.3f, %.3f, %.3f]",
-        odom_topic_.c_str(), msg->header.seq, msg->header.stamp.toSec(),
+        "[LocBaseCallback] Received %s: seq=%u, stamp=%.3f, pos=[%.3f, %.3f, %.3f]",
+        loc_base_topic_.c_str(), msg->header.seq, msg->header.stamp.toSec(),
         pos_x_, pos_y_, pos_z_);
+
+    yaw_ = extractYaw(msg);
 
     tf2::Quaternion q(
         msg->pose.pose.orientation.x, msg->pose.pose.orientation.y,
@@ -135,9 +128,6 @@ void MavlinkTelemetry::localOdomCallback(
     tf2::Matrix3x3 m(q);
     double r, p, y;
     m.getRPY(r, p, y);
-
-    yaw_enu_ = extractYaw(msg);
-    yaw_enu_valid_ = true;
 
     if (use_degrees_) {
         roll_ = r * 180.0 / M_PI;
@@ -163,6 +153,13 @@ void MavlinkTelemetry::localOdomCallback(
     if (opt_datum.has_value()) {
         last_reliable_datum_ = opt_datum;
     }
+}
+
+void MavlinkTelemetry::localOdomCallback(
+    const nav_msgs::Odometry::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    yaw_enu_ = extractYaw(msg);
+    yaw_enu_valid_ = true;
 }
 
 void MavlinkTelemetry::globalGpsCallback(
@@ -369,7 +366,7 @@ void MavlinkTelemetry::setupMavrosStreams(double rate) {
 MavlinkTelemetry::OdomDiag MavlinkTelemetry::getOdomDiag() {
     std::lock_guard<std::mutex> lock(data_mutex_);
     OdomDiag diag;
-    diag.topic = odom_topic_;
+    diag.topic = loc_base_topic_;
     diag.num_publishers = sub_local_odom_.getNumPublishers();
     diag.msg_count = odom_msg_count_.load();
     diag.pos_x = pos_x_;

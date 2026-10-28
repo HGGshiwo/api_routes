@@ -149,7 +149,7 @@ void ApiRoutesEngine::on_tick(double dt, AppContext &ctx) {
       if (telemetry_) {
         auto diag = telemetry_->getOdomDiag();
         std::ostringstream oss;
-        oss << "[ApiRoutes Diag] odom_topic=" << diag.topic
+        oss << "[ApiRoutes Diag] loc_base_topic=" << diag.topic
             << " | pubs=" << diag.num_publishers
             << " | rx_cnt=" << diag.msg_count << " | age=";
         if (diag.age_sec >= 0) {

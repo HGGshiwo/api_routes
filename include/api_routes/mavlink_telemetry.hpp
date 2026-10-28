@@ -99,7 +99,6 @@ class MavlinkTelemetry {
     double param_pull_interval_{3.0};
     std::atomic<bool> is_pulling_{false};
     std::atomic<bool> shutting_down_{false};
-    std::string odom_topic_{"/mavros/local_position/odom"};
     std::string loc_base_topic_{"loc_base"};
 
     // Worker thread and cv for non-blocking param pull

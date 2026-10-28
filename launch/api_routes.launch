@@ -27,7 +27,6 @@
     <!-- api_routes configuration arguments -->
     <arg name="publish_rate" default="20.0"/>
     <arg name="use_degrees" default="false"/>
-    <arg name="odom_topic" default="/mavros/local_position/odom"/>
     <arg name="mqtt_host" default="localhost"/>
     <arg name="mqtt_port" default="1883"/>
     <arg name="web_port" default="8000"/>
@@ -39,7 +38,6 @@
     <node pkg="api_routes" type="api_routes_node" name="api_routes" respawn="true" respawn_delay="5">
         <param name="publish_rate" value="$(arg publish_rate)"/>
         <param name="use_degrees" value="$(arg use_degrees)"/>
-        <param name="odom_topic" value="$(arg odom_topic)"/>
         <param name="mqtt_host" value="$(arg mqtt_host)"/>
         <param name="mqtt_port" value="$(arg mqtt_port)"/>
         <param name="web_port" value="$(arg web_port)"/>
