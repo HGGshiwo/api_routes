@@ -540,7 +540,7 @@ void ApiRoutesEngine::register_mqtt_sub(std::shared_ptr<ApiRouteTask> task,
     bool has_task = (task != nullptr);
     auto last_log_time = std::make_shared<ros::Time>(0);
 
-    mqtt_adapter_->register_raw_handler(
+    register_raw_handler_with_trace(
         mqtt_topic,
         [pub, mqtt_topic, weak_task, has_task, last_log_time](const dk::MqttMessage &msg) {
             if (has_task && weak_task.expired()) {
@@ -1003,7 +1003,7 @@ void ApiRoutesEngine::subscribe_dynamic_mqtt_topic(const std::string &raw_topic,
 
     ROS_INFO_STREAM("[DynamicMQTT] Subscribing to MQTT topic: " << resolved_topic
                     << " (qos=" << qos << ", pattern=" << raw_topic << ")");
-    mqtt_adapter_->register_raw_handler(
+    register_raw_handler_with_trace(
         resolved_topic,
         [this, raw_topic](const dk::MqttMessage &msg) {
             ROS_INFO_STREAM("[MqttLog] topic='" << msg.topic << "' qos="

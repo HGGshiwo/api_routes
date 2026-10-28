@@ -47,6 +47,8 @@ class MavlinkTelemetry {
    private:
     void stateCallback(const mavros_msgs::State::ConstPtr &msg);
     void localOdomCallback(const nav_msgs::Odometry::ConstPtr &msg);
+    void locBaseCallback(const nav_msgs::Odometry::ConstPtr &msg);
+    double extractYaw(const nav_msgs::Odometry::ConstPtr &msg);
     void globalGpsCallback(const sensor_msgs::NavSatFix::ConstPtr &msg);
     void gpsRawCallback(const mavros_msgs::GPSRAW::ConstPtr &msg);
     void relAltCallback(const std_msgs::Float64::ConstPtr &msg);
@@ -59,6 +61,7 @@ class MavlinkTelemetry {
     // ROS Subscribers & Service Clients
     ros::Subscriber sub_state_;
     ros::Subscriber sub_local_odom_;
+    ros::Subscriber sub_loc_base_;
     ros::Subscriber sub_global_gps_;
     ros::Subscriber sub_gps_raw_;
     ros::Subscriber sub_rel_alt_;
@@ -73,7 +76,9 @@ class MavlinkTelemetry {
     double pos_z_{0.0};
     double roll_{0.0};
     double pitch_{0.0};
-    double yaw_{0.0};
+    double yaw_{0.0};  // yaw from loc_base
+    double yaw_enu_{0.0};  // yaw from odom topic, reported as gpsYaw
+    bool yaw_enu_valid_{false};
     double lon_{0.0};
     double lat_{0.0};
     double alt_{0.0};
@@ -95,6 +100,7 @@ class MavlinkTelemetry {
     std::atomic<bool> is_pulling_{false};
     std::atomic<bool> shutting_down_{false};
     std::string odom_topic_{"/mavros/local_position/odom"};
+    std::string loc_base_topic_{"loc_base"};
 
     // Worker thread and cv for non-blocking param pull
     std::thread param_pull_thread_;

@@ -66,6 +66,7 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
     ros::Publisher action_pub_;
     ros::Publisher routes_status_pub_;
     std::atomic<bool> mqtt_connected_{false};
+    std::atomic<bool> control_subscribed_{false};
 
     std::map<std::string, std::function<void()>> reconnect_callbacks_;
     std::map<std::string, std::function<void()>> state_heartbeat_callbacks_;
@@ -92,6 +93,12 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
    private:
     void setup_mqtt();
     void setup_http_service();
+    void setup_control_topic();
+
+    // 包装 register_raw_handler：下发消息带 trace_id 时转发到 device/$/trace
+    void register_raw_handler_with_trace(
+        const std::string &mqtt_topic,
+        const std::function<void(const dk::MqttMessage &)> &cb, uint8_t qos);
 
     nlohmann::json handle_get_gps();
     nlohmann::json handle_joystick(const OldJoystickEvent &event);

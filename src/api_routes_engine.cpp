@@ -411,6 +411,65 @@ void ApiRoutesEngine::publish_in_memory_state() {
   }
 }
 
+void ApiRoutesEngine::register_raw_handler_with_trace(
+    const std::string &mqtt_topic,
+    const std::function<void(const dk::MqttMessage &)> &cb, uint8_t qos) {
+  if (!mqtt_adapter_)
+    return;
+  mqtt_adapter_->register_raw_handler(
+      mqtt_topic,
+      [this, cb](const dk::MqttMessage &msg) {
+        try {
+          auto data = nlohmann::json::parse(msg.payload, nullptr, false);
+          if (data.is_object() && data.contains("trace_id")) {
+            nlohmann::json trace;
+            trace["trace_id"] = data["trace_id"];
+            trace["topic"] = msg.topic;
+            mqtt_adapter_->publish(resolve_topic("device/$/trace"),
+                                   trace.dump(), 0, false);
+          }
+        } catch (const std::exception &e) {
+          ROS_WARN_STREAM("[ApiRoutes] trace_id extract failed on topic '"
+                          << msg.topic << "': " << e.what());
+        } catch (...) {
+        }
+        if (cb)
+          cb(msg);
+      },
+      qos);
+}
+
+void ApiRoutesEngine::setup_control_topic() {
+  if (!device_code_.has_value() || !mqtt_adapter_)
+    return;
+  if (control_subscribed_.exchange(true))
+    return;
+
+  ROS_INFO_STREAM("[Mqtt] Subscribing control topic: "
+                  << resolve_topic("device/$/control"));
+  register_raw_handler_with_trace(
+      resolve_topic("device/$/control"),
+      [this](const dk::MqttMessage &msg) {
+        try {
+          auto data = nlohmann::json::parse(msg.payload, nullptr, false);
+          if (data.is_object() && data.value("mode", "") == "emergency") {
+            ROS_WARN("[ApiRoutes] Emergency control received, "
+                     "publishing lie-down to dank/action");
+            handle_action(ActionType::LIE_DOWN);
+          } else {
+            ROS_INFO_STREAM("[ApiRoutes] Control message ignored (mode not "
+                            "emergency): '"
+                            << msg.payload.substr(0, 100) << "'");
+          }
+        } catch (const std::exception &e) {
+          ROS_WARN_STREAM("[ApiRoutes] Control message parse failed: "
+                          << e.what());
+        } catch (...) {
+        }
+      },
+      0);
+}
+
 void ApiRoutesEngine::setup_mqtt() {
   try {
     if (!mqtt_adapter_)
@@ -423,6 +482,7 @@ void ApiRoutesEngine::setup_mqtt() {
       }
       mqtt_adapter_->connect(device_code_.value());
       setup_all_topic();
+      setup_control_topic();
     } else {
       mqtt_adapter_->register_publish_handler<RegisterEvent>(
           "$exclusive/register", [this](const RegisterEvent &data) -> void {
@@ -439,6 +499,7 @@ void ApiRoutesEngine::setup_mqtt() {
                   mqtt_adapter_->connect(device_code_.value());
                 }
                 setup_all_topic();
+                setup_control_topic();
 
                 private_nh_.setParam("device_code", device_code_.value());
                 save_param("device_code", device_code_.value());

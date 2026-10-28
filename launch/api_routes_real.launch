@@ -13,6 +13,5 @@
         <arg name="cloud_host" value="100.64.0.12" />
         <arg name="cloud_port" value="40001"/>
         <arg name="fcu_url" value="$(arg fcu_url)"/>
-        <arg name="odom_topic" value="/loc_base" />
     </include>
 </launch>

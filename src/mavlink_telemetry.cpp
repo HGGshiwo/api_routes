@@ -21,6 +21,7 @@ MavlinkTelemetry::MavlinkTelemetry(ros::NodeHandle &nh, ros::NodeHandle &pnh) {
     pnh.param<bool>("use_degrees", use_degrees_, false);
     pnh.param<std::string>("odom_topic", odom_topic_,
                            "/mavros/local_position/odom");
+    pnh.param<std::string>("loc_base_topic", loc_base_topic_, "loc_base");
 
     if (publish_rate_ <= 0.0) {
         ROS_WARN(
@@ -39,6 +40,8 @@ MavlinkTelemetry::MavlinkTelemetry(ros::NodeHandle &nh, ros::NodeHandle &pnh) {
         nh.subscribe("/mavros/state", 10, &MavlinkTelemetry::stateCallback, this);
     sub_local_odom_ = nh.subscribe(odom_topic_, 10,
                                    &MavlinkTelemetry::localOdomCallback, this);
+    sub_loc_base_ = nh.subscribe(loc_base_topic_, 10,
+                                 &MavlinkTelemetry::locBaseCallback, this);
     sub_global_gps_ = nh.subscribe("/mavros/global_position/global", 10,
                                    &MavlinkTelemetry::globalGpsCallback, this);
     sub_gps_raw_ = nh.subscribe("/mavros/gpsstatus/gps1/raw", 10,
@@ -87,6 +90,29 @@ void MavlinkTelemetry::stateCallback(const mavros_msgs::State::ConstPtr &msg) {
     }
 }
 
+double MavlinkTelemetry::extractYaw(
+    const nav_msgs::Odometry::ConstPtr &msg) {
+    tf2::Quaternion q(
+        msg->pose.pose.orientation.x, msg->pose.pose.orientation.y,
+        msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
+    tf2::Matrix3x3 m(q);
+    double r, p, y;
+    m.getRPY(r, p, y);
+
+    if (use_degrees_) {
+        y = y * 180.0 / M_PI;
+    }
+
+    // y = -y + M_PI * 0.5;  // ENU -> NED
+    return y;
+}
+
+void MavlinkTelemetry::locBaseCallback(
+    const nav_msgs::Odometry::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    yaw_ = extractYaw(msg);
+}
+
 void MavlinkTelemetry::localOdomCallback(
     const nav_msgs::Odometry::ConstPtr &msg) {
     odom_msg_count_++;
@@ -110,17 +136,16 @@ void MavlinkTelemetry::localOdomCallback(
     double r, p, y;
     m.getRPY(r, p, y);
 
+    yaw_enu_ = extractYaw(msg);
+    yaw_enu_valid_ = true;
+
     if (use_degrees_) {
         roll_ = r * 180.0 / M_PI;
         pitch_ = p * 180.0 / M_PI;
-        yaw_ = y * 180.0 / M_PI;
     } else {
         roll_ = r;
         pitch_ = p;
-        yaw_ = y;
     }
-
-    yaw_ = -yaw_ + M_PI * 0.5;  // ENU -> NED
 
     x_vel_body_ = msg->twist.twist.linear.x;
     y_vel_body_ = msg->twist.twist.linear.y;
@@ -235,7 +260,11 @@ nlohmann::json MavlinkTelemetry::getMergedState() {
     j["mapLocation"] = {pos_x_, pos_y_, pos_z_};
     j["roll"] = roll_;
     j["pitch"] = pitch_;
-    j["yaw"] = yaw_;
+    j["yaw"] = yaw_;  // from loc_base
+    if (yaw_enu_valid_) {
+        j["gpsYaw"] = yaw_enu_;  // from odom topic
+    }
+    
     
     j["gps_fix_type"] = gps_fix_type_;
     j["xVel"] = x_vel_;

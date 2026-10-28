@@ -9,7 +9,7 @@
     <arg name="respawn_mavros" default="true"/>
 
     <!-- Include the standard MAVROS launch file -->
-    <include file="$(find mavros)/launch/apm.launch">
+    <!-- <include file="$(find mavros)/launch/apm.launch">
         <arg name="fcu_url" value="$(arg fcu_url)"/>
         <arg name="gcs_url" value="$(arg gcs_url)"/>
         <arg name="tgt_system" value="$(arg tgt_system)"/>
@@ -17,6 +17,11 @@
         <arg name="log_output" value="$(arg log_output)"/>
         <arg name="fcu_protocol" value="$(arg fcu_protocol)"/>
         <arg name="respawn_mavros" value="$(arg respawn_mavros)"/>
+    </include> -->
+    <include file="$(find dankong)/launch/dankong_real.launch">
+        <arg name="mavsdk_url" value="$(arg fcu_url)"/>
+        <arg name="robot_type" value="go2"/>
+        <arg name="web_port" value="8001" />
     </include>
 
     <!-- api_routes configuration arguments -->
