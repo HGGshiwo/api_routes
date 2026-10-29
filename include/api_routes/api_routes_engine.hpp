@@ -95,7 +95,7 @@ class ApiRoutesEngine : public dk::BaseEngine<AppContext, ApiRoutesEngine> {
     void setup_http_service();
     void setup_control_topic();
 
-    // 包装 register_raw_handler：下发消息带 trace_id 时转发到 device/$/trace
+    // 包装 register_raw_handler：下发消息带 traceId 时转发到 device/$/trace
     void register_raw_handler_with_trace(
         const std::string &mqtt_topic,
         const std::function<void(const dk::MqttMessage &)> &cb, uint8_t qos);

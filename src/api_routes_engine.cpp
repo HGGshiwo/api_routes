@@ -428,15 +428,15 @@ void ApiRoutesEngine::register_raw_handler_with_trace(
       [this, cb](const dk::MqttMessage &msg) {
         try {
           auto data = nlohmann::json::parse(msg.payload, nullptr, false);
-          if (data.is_object() && data.contains("trace_id")) {
+          if (data.is_object() && data.contains("traceId")) {
             nlohmann::json trace;
-            trace["trace_id"] = data["trace_id"];
+            trace["traceId"] = data["traceId"];
             trace["topic"] = msg.topic;
             mqtt_adapter_->publish(resolve_topic("device/$/trace"),
                                    trace.dump(), 0, false);
           }
         } catch (const std::exception &e) {
-          ROS_WARN_STREAM("[ApiRoutes] trace_id extract failed on topic '"
+          ROS_WARN_STREAM("[ApiRoutes] traceId extract failed on topic '"
                           << msg.topic << "': " << e.what());
         } catch (...) {
         }
